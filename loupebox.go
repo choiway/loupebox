@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -17,6 +19,7 @@ func main() {
 	fmt.Println("hello, from lightbox")
 
 	filenames, err := walkdirectory("/mnt/f/test_photos")
+	// filenames, err := walkdirectory("/mnt/e/Pictures")
 	if err != nil {
 		log.Fatalln("error reading path")
 	}
@@ -51,47 +54,65 @@ func addfiles(filenames []string) {
 
 		fmt.Println(path)
 
+		// TODO: Skip directories
+
 		f, err := os.Open(path)
 		if err != nil {
 			log.Println("Error")
 			log.Println(err)
 		}
 
+		byteArray, err := ioutil.ReadAll(f)
+		if err != nil {
+			fmt.Println(err)
+		}
+
+		h := sha256.New()
+		_, err = io.Copy(h, bytes.NewReader(byteArray))
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		fmt.Printf("SHA Hash: %x\n", h.Sum(nil))
+
 		// Optionally register camera makenote data parsing - currently Nikon and
 		// Canon are supported.
 		exif.RegisterParsers(mknote.All...)
-		x, err := exif.Decode(f)
+		x, err := exif.Decode(bytes.NewReader(byteArray))
+		// info, err := os.Stat(path)
 
 		if err != nil {
 			log.Print("EXIST decode error")
 			log.Println(err)
 			fmt.Print("\n\n")
 		} else {
-			camMake, _ := x.Get(exif.Make)
-			fmt.Println(camMake.StringVal())
-
-			camModel, _ := x.Get(exif.Model) // normally, don't ignore errors!
-			fmt.Println(camModel.StringVal())
-
-			focal, _ := x.Get(exif.FocalLength)
-			numer, denom, _ := focal.Rat2(0) // retrieve first (only) rat. value
-			fmt.Printf("%v/%v\n", numer, denom)
-
-			// Two convenience functions exist for date/time taken and GPS coords:
-			tm, _ := x.DateTime()
-			fmt.Println("Taken: ", tm)
-
-			lat, long, _ := x.LatLong()
-			fmt.Println("lat, long: ", lat, ", ", long)
-
-			h := sha256.New()
-			if _, err := io.Copy(h, f); err != nil {
-				log.Fatal(err)
+			json, err := x.MarshalJSON()
+			if err != nil {
+				log.Fatal("couldn't unmarshel")
 			}
+			fmt.Print(string(json))
 
-			fmt.Printf("SHA Hash: %x\n", h.Sum(nil))
+			// camMake, _ := x.Get(exif.Make)
+			// fmt.Println(camMake.StringVal())
+
+			// camModel, _ := x.Get(exif.Model) // normally, don't ignore errors!
+			// fmt.Println(camModel.StringVal())
+
+			// focal, _ := x.Get(exif.FocalLength)
+			// numer, denom, _ := focal.Rat2(0) // retrieve first (only) rat. value
+			// fmt.Printf("%v/%v\n", numer, denom)
+
+			// // // Two convenience functions exist for date/time taken and GPS coords:
+			// tm, _ := x.DateTime()
+			// fmt.Println("Taken: ", tm)
+
+			// lat, long, _ := x.LatLong()
+			// fmt.Println("lat, long: ", lat, ", ", long)
+
 			fmt.Print("\n\n")
 		}
+
+		f.Close()
 
 	}
 }
