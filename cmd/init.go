@@ -16,8 +16,12 @@ limitations under the License.
 package cmd
 
 import (
+	"database/sql"
 	"fmt"
+	"log"
+	"os"
 
+	_ "github.com/mattn/go-sqlite3" // Import go-sqlite3 library
 	"github.com/spf13/cobra"
 )
 
@@ -33,8 +37,36 @@ This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("init called")
-		fmt.Println("create directory")
-		fmt.Println("Add database")
+
+		path, err := os.Getwd()
+		if err != nil {
+			log.Println(err)
+		}
+		fmt.Println(path)
+
+		// fmt.Println("create directory")
+		err = os.Mkdir(".loupebox", 0755)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		os.Remove(".loupebox/sqlite-database.db") // I delete the file to avoid duplicated records.
+		// SQLite is a file based database.
+
+		log.Println("Creating sqlite-database.db...")
+		file, err := os.Create(".loupebox/sqlite-database.db") // Create SQLite file
+		if err != nil {
+			log.Fatal(err.Error())
+		}
+		file.Close()
+		log.Println("sqlite-database.db created")
+
+		sqliteDatabase, err := sql.Open("sqlite3", ".loupebox/sqlite-database.db") // Open the created SQLite File
+		if err != nil {
+			panic(err)
+		}
+		defer sqliteDatabase.Close() // Defer Closing the database
+		createTable(sqliteDatabase)
 	},
 }
 
@@ -50,4 +82,25 @@ func init() {
 	// Cobra supports local flags which will only run when this command
 	// is called directly, e.g.:
 	// initCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+}
+
+func initializeDatabase() {
+
+}
+
+func createTable(db *sql.DB) {
+	createStudentTableSQL := `CREATE TABLE student (
+		"idStudent" integer NOT NULL PRIMARY KEY AUTOINCREMENT,		
+		"code" TEXT,
+		"name" TEXT,
+		"program" TEXT		
+	  );` // SQL Statement for Create Table
+
+	log.Println("Create student table...")
+	statement, err := db.Prepare(createStudentTableSQL) // Prepare SQL Statement
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+	statement.Exec() // Execute SQL Statements
+	log.Println("student table created")
 }
