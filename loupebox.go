@@ -8,20 +8,22 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/choiway/loupebox/cmd"
 	"github.com/rwcarlsen/goexif/exif"
 	"github.com/rwcarlsen/goexif/mknote"
 )
 
 func main() {
+	cmd.Execute()
 
-	fmt.Println("hello, from lightbox")
+	// fmt.Println("hello, from lightbox")
 
-	filenames, err := walkdirectory("/mnt/f/test_photos")
-	if err != nil {
-		log.Fatalln("error reading path")
-	}
+	// filenames, err := walkdirectory("/mnt/f/test_photos")
+	// if err != nil {
+	// 	log.Fatalln("error reading path")
+	// }
 
-	addfiles(filenames)
+	// addfiles(filenames)
 }
 
 func walkdirectory(path string) ([]string, error) {
