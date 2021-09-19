@@ -28,7 +28,7 @@ import (
 // initCmd represents the init command
 var initCmd = &cobra.Command{
 	Use:   "init",
-	Short: "A brief description of your command",
+	Short: "Initializes loupebox for the current directory",
 	Long: `A longer description that spans multiple lines and likely contains examples
 and usage of using your command. For example:
 
@@ -38,11 +38,18 @@ to quickly create a Cobra application.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("init called")
 
-		path, err := os.Getwd()
+		currentpath, err := os.Getwd()
 		if err != nil {
 			log.Println(err)
 		}
-		fmt.Println(path)
+		fmt.Println(currentpath)
+
+		//
+
+		err = os.RemoveAll(".loupebox")
+		if err != nil {
+			log.Fatal(err)
+		}
 
 		// fmt.Println("create directory")
 		err = os.Mkdir(".loupebox", 0755)
@@ -50,23 +57,17 @@ to quickly create a Cobra application.`,
 			log.Fatal(err)
 		}
 
-		os.Remove(".loupebox/sqlite-database.db") // I delete the file to avoid duplicated records.
-		// SQLite is a file based database.
+		dbPath := ".loupebox/loupebox.db"
 
-		log.Println("Creating sqlite-database.db...")
-		file, err := os.Create(".loupebox/sqlite-database.db") // Create SQLite file
-		if err != nil {
-			log.Fatal(err.Error())
-		}
-		file.Close()
-		log.Println("sqlite-database.db created")
+		initializeDatabase(dbPath)
 
-		sqliteDatabase, err := sql.Open("sqlite3", ".loupebox/sqlite-database.db") // Open the created SQLite File
+		sqliteDatabase, err := sql.Open("sqlite3", dbPath) // Open the created SQLite File
 		if err != nil {
 			panic(err)
 		}
 		defer sqliteDatabase.Close() // Defer Closing the database
-		createTable(sqliteDatabase)
+
+		createPhotosTable(sqliteDatabase)
 	},
 }
 
@@ -84,23 +85,33 @@ func init() {
 	// initCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 }
 
-func initializeDatabase() {
+func initializeDatabase(dbPath string) {
+	os.Remove(dbPath)
 
+	log.Println("Creating loupebox.db...")
+	file, err := os.Create(dbPath) // Create SQLite file
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+	file.Close()
+	log.Println("loupebox.db created")
 }
 
-func createTable(db *sql.DB) {
-	createStudentTableSQL := `CREATE TABLE student (
-		"idStudent" integer NOT NULL PRIMARY KEY AUTOINCREMENT,		
-		"code" TEXT,
-		"name" TEXT,
-		"program" TEXT		
+func createPhotosTable(db *sql.DB) {
+	sql := `CREATE TABLE photos (
+		"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT,		
+		"inserted_at" DATETIME,
+		"updated_at" DATETIME,
+		"sha_hash" TEXT,
+		"path" TEXT,
+		"date_taken" TEXT
 	  );` // SQL Statement for Create Table
 
-	log.Println("Create student table...")
-	statement, err := db.Prepare(createStudentTableSQL) // Prepare SQL Statement
+	log.Println("Create photos table...")
+	statement, err := db.Prepare(sql) // Prepare SQL Statement
 	if err != nil {
 		log.Fatal(err.Error())
 	}
 	statement.Exec() // Execute SQL Statements
-	log.Println("student table created")
+	log.Println("photos table created")
 }

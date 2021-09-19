@@ -20,5 +20,6 @@ to quickly create a Cobra application.`,
 
 // Execute executes the root command.
 func Execute() error {
+	rootCmd.CompletionOptions.DisableDefaultCmd = true
 	return rootCmd.Execute()
 }
