@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 
 	"github.com/choiway/loupebox/cmd"
+
 	"github.com/rwcarlsen/goexif/exif"
 	"github.com/rwcarlsen/goexif/mknote"
 )

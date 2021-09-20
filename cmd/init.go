@@ -89,15 +89,19 @@ func initializeDatabase(dbPath string) {
 	os.Remove(dbPath)
 
 	log.Println("Creating loupebox.db...")
+
 	file, err := os.Create(dbPath) // Create SQLite file
 	if err != nil {
 		log.Fatal(err.Error())
 	}
+
 	file.Close()
+
 	log.Println("loupebox.db created")
 }
 
 func createPhotosTable(db *sql.DB) {
+
 	sql := `CREATE TABLE photos (
 		"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT,		
 		"inserted_at" DATETIME,
@@ -108,10 +112,12 @@ func createPhotosTable(db *sql.DB) {
 	  );` // SQL Statement for Create Table
 
 	log.Println("Create photos table...")
+
 	statement, err := db.Prepare(sql) // Prepare SQL Statement
 	if err != nil {
 		log.Fatal(err.Error())
 	}
 	statement.Exec() // Execute SQL Statements
+
 	log.Println("photos table created")
 }
