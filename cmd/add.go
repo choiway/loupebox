@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/rwcarlsen/goexif/exif"
@@ -40,6 +41,8 @@ var addCmd = &cobra.Command{
 	Long: `A longer description that spans multiple lines and likely contains examples
 and usage of using your command. For example:
 
+loupebox add /source/dir
+
 Cobra is a CLI library for Go that empowers applications.
 This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
@@ -50,6 +53,8 @@ to quickly create a Cobra application.`,
 			fmt.Println(value)
 		}
 
+		// Get path argument
+		// Will throw an error if it iesn't a valid path but should
 		path := args[0]
 
 		fmt.Println("hello, from lightbox")
@@ -103,11 +108,11 @@ func walkdirectory(path string) ([]string, error) {
 func addfiles(filenames []string) {
 	for _, path := range filenames {
 
-		fmt.Println(path)
+		log.Printf("Opening: %s\n", path)
 
 		f, err := os.Open(path)
 		if err != nil {
-			log.Println("Error")
+			log.Printf("An error ocurred while trying to open: %s\n", path)
 			log.Println(err)
 		}
 
@@ -128,7 +133,7 @@ func addfiles(filenames []string) {
 		} else {
 
 			sha := hashContent(content)
-			fmt.Printf("SHA Hash: %s\n", sha)
+			// fmt.Printf("SHA Hash: %s\n", sha)
 
 			currentPath, err := os.Getwd()
 			if err != nil {
@@ -145,26 +150,53 @@ func addfiles(filenames []string) {
 
 			tm, _ := exifData.DateTime()
 			newPath := buildContentPath(tm, currentPath)
+			newFilename := generateFileName(filename, sha)
+			newPhotoPath := filepath.Join(newPath, newFilename)
 
 			photo := Photo{
-				ShaHash:   sha,
-				Path:      filepath.Join(newPath, filename),
-				DateTaken: tm,
+				ShaHash:    sha,
+				SourcePath: path,
+				Path:       newPhotoPath,
+				DateTaken:  tm,
 			}
 
 			// Check if in database
 			db, err := openDatabase()
-
 			if err != nil {
 				panic(err)
 			}
+
 			photoExists := CheckIfPhotoExists(db, photo)
 
 			db.Close()
 
 			if photoExists {
+				fmt.Println("Photo already exists, skipping copy")
 
-				fmt.Print("not copying...")
+				db, err := openDatabase()
+				if err != nil {
+					panic(err)
+				}
+
+				sourcePathExists := CheckShaAndSourceRepo(db, photo)
+
+				if sourcePathExists {
+					log.Println("Source path already exists in database, skipping...")
+				} else {
+					log.Println("Logging new source path")
+
+					photo.Status = "skipped"
+
+					db, err := openDatabase()
+					if err != nil {
+						panic(err)
+					}
+
+					err = InsertPhoto(db, photo)
+					if err != nil {
+						panic(err)
+					}
+				}
 
 			} else {
 
@@ -173,10 +205,11 @@ func addfiles(filenames []string) {
 					panic(err)
 				}
 
-				err = ioutil.WriteFile(filepath.Join(newPath, filename), content, 0755)
+				err = ioutil.WriteFile(newPhotoPath, content, 0755)
 				if err != nil {
 					log.Fatal(err)
 				}
+				fmt.Printf("Copied %s to %s\n", path, newPhotoPath)
 
 				// Add to database
 				db, err := openDatabase()
@@ -260,7 +293,22 @@ func CheckIfPhotoExists(db *sql.DB, photo Photo) bool {
 		panic(err)
 	}
 
-	// fmt.Printf("exists: %s\n", strconv.Itoa(exists))
+	if exists == 1 {
+		return true
+	}
+
+	return false
+}
+
+func CheckShaAndSourceRepo(db *sql.DB, photo Photo) bool {
+	sql := `SELECT EXISTS (SELECT 1 FROM photos WHERE sha_hash = ? AND source_path = ?);`
+
+	var exists int
+
+	err := db.QueryRow(sql, photo.ShaHash, photo.SourcePath).Scan(&exists)
+	if err != nil {
+		panic(err)
+	}
 
 	if exists == 1 {
 		return true
@@ -274,9 +322,11 @@ func InsertPhoto(db *sql.DB, photo Photo) error {
 	INSERT OR REPLACE INTO photos(
 		inserted_at,
 		sha_hash,
+		source_path,
 		path,
-		date_taken
-	) values(CURRENT_TIMESTAMP, ?, ?, ?)
+		date_taken,
+		status
+	) values(CURRENT_TIMESTAMP, ?, ?, ?, ?, ?)
 	`
 	stmt, err := db.Prepare(sql)
 	if err != nil {
@@ -284,11 +334,11 @@ func InsertPhoto(db *sql.DB, photo Photo) error {
 	}
 	defer stmt.Close()
 
-	result, err2 := stmt.Exec(photo.ShaHash, photo.Path, photo.DateTaken)
+	_, err2 := stmt.Exec(photo.ShaHash, photo.SourcePath, photo.Path, photo.DateTaken, photo.Status)
 	if err2 != nil {
 		return err2
 	}
-	fmt.Printf("Result: %s", result)
+	log.Println("Added photo to database")
 
 	return nil
 }
@@ -301,4 +351,13 @@ func openDatabase() (*sql.DB, error) {
 	}
 
 	return db, nil
+}
+
+func generateFileName(filename string, sha string) string {
+
+	ext := filepath.Ext(filename)
+	n := strings.TrimSuffix(filename, ext)
+	shortSha := sha[0:6]
+
+	return fmt.Sprintf("%s_%s%s", n, shortSha, ext)
 }

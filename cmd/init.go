@@ -107,11 +107,13 @@ func createPhotosTable(db *sql.DB) {
 		"inserted_at" DATETIME,
 		"updated_at" DATETIME,
 		"sha_hash" TEXT,
+		"source_path" TEXT,
 		"path" TEXT,
-		"date_taken" TEXT
+		"date_taken" TEXT,
+		"status" TEXT
 	  );` // SQL Statement for Create Table
 
-	log.Println("Create photos table...")
+	log.Println("Creating photos table...")
 
 	statement, err := db.Prepare(sql) // Prepare SQL Statement
 	if err != nil {
