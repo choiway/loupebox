@@ -23,6 +23,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -108,7 +109,26 @@ func walkdirectory(path string) ([]string, error) {
 func addfiles(filenames []string) {
 	for _, path := range filenames {
 
-		log.Printf("Opening: %s\n", path)
+		var tm time.Time
+
+		// Check if path already exists in the database
+		db, err := openDatabase()
+		if err != nil {
+			panic(err)
+		}
+
+		pathExists := CheckIfPathExists(db, path)
+
+		db.Close()
+
+		if pathExists {
+			fmt.Print(".")
+			continue
+		}
+
+		// Open file and read exif
+
+		// log.Printf("Opening: %s\n", path)
 
 		f, err := os.Open(path)
 		if err != nil {
@@ -121,114 +141,117 @@ func addfiles(filenames []string) {
 			fmt.Println(err)
 		}
 
+		f.Close()
+		extension := strings.ToLower(filepath.Ext(path))
+		// log.Printf("Extension type: %s\n", extension)
+
+		contentType := http.DetectContentType(content)
+
+		// log.Printf("Content Type: %s", contentType
+
 		// Optionally register camera makenote data parsing - currently Nikon and
 		// Canon are supported.
 		exif.RegisterParsers(mknote.All...)
 		exifData, err := exif.Decode(bytes.NewReader(content))
 
 		if err != nil {
-			log.Print("EXIST decode error")
-			log.Println(err)
-			fmt.Print("\n\n")
+			if contentType == "video/avi" {
+
+				tm, _ = time.Parse("2006-01-02", "1971-08-11")
+
+			} else if contentType == "application/octet-stream" && extension == ".mov" {
+
+				tm, _ = time.Parse("2006-01-02", "1971-01-19")
+
+			} else {
+
+				fmt.Print("x")
+				continue
+
+			}
 		} else {
 
-			sha := hashContent(content)
-			// fmt.Printf("SHA Hash: %s\n", sha)
+			tm, _ = exifData.DateTime()
 
-			currentPath, err := os.Getwd()
-			if err != nil {
-				log.Println(err)
-			}
+		}
 
-			filename := filepath.Base(path)
+		sha := hashContent(content)
+		// fmt.Printf("SHA Hash: %s\n", sha)
 
-			// camMake, _ := x.Get(exif.Make)
-			// fmt.Println(camMake.StringVal())
+		currentPath, err := os.Getwd()
+		if err != nil {
+			log.Println(err)
+		}
 
-			// camModel, _ := x.Get(exif.Model) // normally, don't ignore errors!
-			// fmt.Println(camModel.StringVal())
+		filename := filepath.Base(path)
 
-			tm, _ := exifData.DateTime()
-			newPath := buildContentPath(tm, currentPath)
-			newFilename := generateFileName(filename, sha)
-			newPhotoPath := filepath.Join(newPath, newFilename)
+		// camMake, _ := x.Get(exif.Make)
+		// fmt.Println(camMake.StringVal())
 
-			photo := Photo{
-				ShaHash:    sha,
-				SourcePath: path,
-				Path:       newPhotoPath,
-				DateTaken:  tm,
-			}
+		// camModel, _ := x.Get(exif.Model) // normally, don't ignore errors!
+		// fmt.Println(camModel.StringVal())
+		// tm, _ := exifData.DateTime()
+		newPath := buildContentPath(tm, currentPath)
+		newFilename := generateFileName(filename, sha)
+		newPhotoPath := filepath.Join(newPath, newFilename)
 
-			// Check if in database
+		photo := Photo{
+			ShaHash:    sha,
+			SourcePath: path,
+			Path:       newPhotoPath,
+			DateTaken:  tm,
+		}
+
+		// Check if in database
+		db, err = openDatabase()
+		if err != nil {
+			panic(err)
+		}
+
+		photoExists := CheckIfPhotoExists(db, photo)
+
+		db.Close()
+
+		if photoExists {
+			fmt.Println("Photo already exists, skipping copy")
+
 			db, err := openDatabase()
 			if err != nil {
 				panic(err)
 			}
 
-			photoExists := CheckIfPhotoExists(db, photo)
+			sourcePathExists := CheckShaAndSourceRepo(db, photo)
 
 			db.Close()
 
-			if photoExists {
-				fmt.Println("Photo already exists, skipping copy")
-
-				db, err := openDatabase()
-				if err != nil {
-					panic(err)
-				}
-
-				sourcePathExists := CheckShaAndSourceRepo(db, photo)
-
-				if sourcePathExists {
-					log.Println("Source path already exists in database, skipping...")
-				} else {
-					log.Println("Logging new source path")
-
-					photo.Status = "skipped"
-
-					db, err := openDatabase()
-					if err != nil {
-						panic(err)
-					}
-
-					err = InsertPhoto(db, photo)
-					if err != nil {
-						panic(err)
-					}
-				}
-
-			} else {
-
-				err = os.MkdirAll(newPath, 0755)
-				if err != nil {
-					panic(err)
-				}
-
-				err = ioutil.WriteFile(newPhotoPath, content, 0755)
-				if err != nil {
-					log.Fatal(err)
-				}
-				fmt.Printf("Copied %s to %s\n", path, newPhotoPath)
-
-				// Add to database
-				db, err := openDatabase()
-				if err != nil {
-					panic(err)
-				}
-
-				err = InsertPhoto(db, photo)
-				if err != nil {
-					panic(err)
-				}
-
-				db.Close()
+			if sourcePathExists {
+				log.Println("Source path already exists in database, skipping...")
+				continue
 			}
 
-			fmt.Print("\n\n")
+			log.Println("Logging new source path")
+
+			photo.Status = "skipped"
+
+			insertPhotoIntoDb(photo)
+
+			continue
 		}
 
-		f.Close()
+		err = os.MkdirAll(newPath, 0755)
+		if err != nil {
+			panic(err)
+		}
+
+		err = ioutil.WriteFile(newPhotoPath, content, 0755)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		log.Printf("Copied %s to %s\n", path, newPhotoPath)
+
+		// Add to database
+		insertPhotoIntoDb(photo)
 	}
 }
 
@@ -281,6 +304,23 @@ func InitDB(filepath string) *sql.DB {
 	}
 
 	return db
+}
+
+func CheckIfPathExists(db *sql.DB, path string) bool {
+	sql := `SELECT EXISTS (SELECT 1 FROM photos WHERE source_path = ?);`
+
+	var exists int
+
+	err := db.QueryRow(sql, path).Scan(&exists)
+	if err != nil {
+		panic(err)
+	}
+
+	if exists == 1 {
+		return true
+	}
+
+	return false
 }
 
 func CheckIfPhotoExists(db *sql.DB, photo Photo) bool {
@@ -360,4 +400,16 @@ func generateFileName(filename string, sha string) string {
 	shortSha := sha[0:6]
 
 	return fmt.Sprintf("%s_%s%s", n, shortSha, ext)
+}
+
+func insertPhotoIntoDb(photo Photo) {
+	db, err := openDatabase()
+	if err != nil {
+		panic(err)
+	}
+
+	err = InsertPhoto(db, photo)
+	if err != nil {
+		panic(err)
+	}
 }
