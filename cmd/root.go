@@ -10,11 +10,12 @@ var (
 	userLicense string
 
 	rootCmd = &cobra.Command{
-		Use: "loupebox	",
-		Short: "A generator for Cobra based Applications",
-		Long: `Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
+		Use: "loupebox",
+		Short: "Photo management utility",
+		Long: `Loupebox is a cli application that helps you aggregate your photos 
+in an organized manner. It helps you avoid copying duplicates and organizes
+your photos by the date they were taken.
+`,
 	}
 )
 
