@@ -82,13 +82,41 @@ to quickly create a Cobra application.`,
 
 		} else {
 
-			// TODO: Add source repo here
+			// Add current repo to repo database
+			// This is used to track recent adds
+
+			db, err := openDatabase()
+			if err != nil {
+				panic(err)
+			}
+
+			result, err := InsertRepo(db, path)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			db.Close()
+
+			lastInsertedId, err := result.LastInsertId()
+			if err != nil {
+				log.Fatal(err)
+			}
 
 			log.Printf("Processing photos from %s\n", path)
 
 			addfiles(filenames)
 
-			// TODO: Update source repo here with flag
+			// Update repo with completed status
+
+			db, err = openDatabase()
+			if err != nil {
+				panic(err)
+			}
+			defer db.Close()
+
+			UpdateRepoWithCompleteStatus(db, lastInsertedId)
+
+			log.Printf("Finished adding %s", path)
 		}
 
 	},
@@ -574,9 +602,10 @@ func InsertRepo(db *sql.DB, path string) (sql.Result, error) {
 	s := `
 	INSERT INTO repos(
 		inserted_at,
+		updated_at,
 		path,
 		status
-	) values(CURRENT_TIMESTAMP, ?, "started")
+	) values(CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, "started")
 	`
 	stmt, err := db.Prepare(s)
 	if err != nil {
@@ -610,4 +639,23 @@ func CheckIfRepoExists(db *sql.DB, path string) bool {
 	}
 
 	return false
+}
+
+func UpdateRepoWithCompleteStatus(db *sql.DB, id int64) {
+	s := `UPDATE repos 
+		SET status = ?, 
+			updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?`
+
+	stmt, err := db.Prepare(s)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer stmt.Close()
+
+	_, err = stmt.Exec("completed", id)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 }
