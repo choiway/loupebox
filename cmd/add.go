@@ -102,7 +102,7 @@ to quickly create a Cobra application.`,
 				log.Fatal(err)
 			}
 
-			log.Printf("Processing photos from %s\n", path)
+			log.Printf("Adding photos from %s\n", path)
 
 			addfiles(filenames)
 
