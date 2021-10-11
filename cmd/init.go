@@ -16,6 +16,7 @@ limitations under the License.
 package cmd
 
 import (
+	"bufio"
 	"database/sql"
 	"fmt"
 	"log"
@@ -36,53 +37,32 @@ Cobra is a CLI library for Go that empowers applications.
 This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("init called")
 
 		currentpath, err := os.Getwd()
 		if err != nil {
 			log.Println(err)
 		}
-		fmt.Println(currentpath)
+		fmt.Printf("Working directory: %s\n", currentpath)
 
-		// Remove existing .loupebox directory
+		_, err = os.Stat(".loupebox")
+		if os.IsNotExist(err) {
+			initializeLoupebox()
+		} else {
+			scanner := bufio.NewScanner(os.Stdin)
 
-		err = os.RemoveAll(".loupebox")
-		if err != nil {
-			log.Fatal(err)
+			fmt.Print(`Loupebox has already been initialized in this foler. Do you want to erase
+the existing info and reinitialize Loupebox? [Y/n]:`)
+			scanner.Scan()
+			text := scanner.Text()
+
+			if text == "Y" {
+				fmt.Println("Reinitializing...")
+				initializeLoupebox()
+			} else {
+				fmt.Println("Aborting initialization")
+			}
 		}
 
-		// Create new loupebox directory
-
-		err = os.Mkdir(".loupebox", 0755)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		// initilaize loupebox database
-
-		dbPath := ".loupebox/loupebox.db"
-
-		initializeDatabase(dbPath)
-
-		// Create photos table
-
-		sqliteDatabase, err := sql.Open("sqlite3", dbPath)
-		if err != nil {
-			panic(err)
-		}
-		defer sqliteDatabase.Close()
-
-		createPhotosTable(sqliteDatabase)
-
-		// Create repos table
-
-		sqliteDatabase, err = sql.Open("sqlite3", dbPath)
-		if err != nil {
-			panic(err)
-		}
-		defer sqliteDatabase.Close()
-
-		createReposTable(sqliteDatabase)
 	},
 }
 
@@ -98,6 +78,56 @@ func init() {
 	// Cobra supports local flags which will only run when this command
 	// is called directly, e.g.:
 	// initCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+}
+
+func initializeLoupebox() {
+	// Remove existing .loupebox directory
+
+	// TODO: should add check if .loupebox already exists
+	err := os.RemoveAll(".loupebox")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Create new loupebox directory
+
+	err = os.Mkdir(".loupebox", 0755)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// initilaize loupebox database
+
+	dbPath := ".loupebox/loupebox.db"
+
+	initializeDatabase(dbPath)
+
+	// Create .cache folder for thumbnails
+
+	err = os.Mkdir(".loupebox/cache", 0755)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Create photos table
+
+	sqliteDatabase, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		panic(err)
+	}
+	defer sqliteDatabase.Close()
+
+	createPhotosTable(sqliteDatabase)
+
+	// Create repos table
+
+	sqliteDatabase, err = sql.Open("sqlite3", dbPath)
+	if err != nil {
+		panic(err)
+	}
+	defer sqliteDatabase.Close()
+
+	createReposTable(sqliteDatabase)
 }
 
 func initializeDatabase(dbPath string) {
