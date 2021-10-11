@@ -25,6 +25,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"strconv"
@@ -149,6 +150,10 @@ func addfiles(filenames []string) {
 			continue
 		}
 
+		// Check if directory and file name exists
+		// This checks for the intance when the source repo path might be different but the
+		// local directory and photo name are the same as one that was already imported
+
 		extension := strings.ToLower(filepath.Ext(path))
 		filename := filepath.Base(path)
 		dir := filepath.Base(filepath.Dir(path))
@@ -167,14 +172,20 @@ func addfiles(filenames []string) {
 			continue
 		}
 
+		// Skips extensions with json
+
 		ext := strings.ToLower(filepath.Ext(path))
 
 		if ext == ".json" {
 			continue
 		}
 
+		// Checks is path is s directory
+		// Skip to next path if it is a direcotry
+
 		info, err := os.Stat(path)
 		if os.IsNotExist(err) {
+			// This throws an error is the source path doesn't exist
 			log.Fatal("File does not exist.")
 		}
 
@@ -182,15 +193,15 @@ func addfiles(filenames []string) {
 			continue
 		}
 
+		// Skip files that includes the suffix -edited in its filename
+		// Handles edited files and duplicates from google photos
+		// Sha won't catch thes files as different
+
 		if strings.Contains(path, "-edited") {
 			continue
 		}
 
-		// filename := filepath.Base(p) dir := path.Base(path.Dir(p))
-
-		// Open file and read exif
-
-		// log.Printf("Opening: %s\n", path)
+		// Open file, detect content type and read exif
 
 		f, err := os.Open(path)
 		if err != nil {
@@ -208,6 +219,8 @@ func addfiles(filenames []string) {
 		contentType := http.DetectContentType(content)
 		exif.RegisterParsers(mknote.All...)
 		exifData, err := exif.Decode(bytes.NewReader(content))
+
+		// Handle movie files and set date taken timestamp
 
 		if err != nil {
 			if contentType == "video/avi" {
@@ -230,8 +243,9 @@ func addfiles(filenames []string) {
 
 		}
 
+		// Generate sha and filename
+
 		sha := hashContent(content)
-		// fmt.Printf("SHA Hash: %s\n", sha)
 
 		currentPath, err := os.Getwd()
 		if err != nil {
@@ -255,7 +269,8 @@ func addfiles(filenames []string) {
 			DateTaken:  tm,
 		}
 
-		// Check if in database
+		// Check if photo already exists in database
+
 		db, err = openDatabase()
 		if err != nil {
 			panic(err)
@@ -264,6 +279,8 @@ func addfiles(filenames []string) {
 		photoExists := CheckIfPhotoExists(db, photo)
 
 		db.Close()
+
+		// Add photo to repo
 
 		if photoExists {
 			fmt.Println("Photo already exists, skipping copy")
@@ -292,19 +309,35 @@ func addfiles(filenames []string) {
 			continue
 		}
 
+		// Create new directory
+
 		err = os.MkdirAll(newPath, 0755)
 		if err != nil {
 			panic(err)
 		}
+
+		// Write content to repo
 
 		err = ioutil.WriteFile(newPhotoPath, content, 0755)
 		if err != nil {
 			log.Fatal(err)
 		}
 
+		// Generate thumbnail
+
+		thumbFilename := fmt.Sprintf("%s/.loupebox/cache/%s.jpeg", currentPath, sha)
+		cmd := exec.Command("darktable-cli", path, thumbFilename, "--height", "300")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		err = cmd.Run()
+		if err != nil {
+			log.Fatalf("cmd.Run() failed with %s\n", err)
+		}
+
 		log.Printf("Copied %s to %s\n", path, newPhotoPath)
 
 		// Add to database
+
 		insertPhotoIntoDb(photo)
 	}
 }
