@@ -44,30 +44,45 @@ to quickly create a Cobra application.`,
 		}
 		fmt.Println(currentpath)
 
-		//
+		// Remove existing .loupebox directory
 
 		err = os.RemoveAll(".loupebox")
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		// fmt.Println("create directory")
+		// Create new loupebox directory
+
 		err = os.Mkdir(".loupebox", 0755)
 		if err != nil {
 			log.Fatal(err)
 		}
 
+		// initilaize loupebox database
+
 		dbPath := ".loupebox/loupebox.db"
 
 		initializeDatabase(dbPath)
 
-		sqliteDatabase, err := sql.Open("sqlite3", dbPath) // Open the created SQLite File
+		// Create photos table
+
+		sqliteDatabase, err := sql.Open("sqlite3", dbPath)
 		if err != nil {
 			panic(err)
 		}
-		defer sqliteDatabase.Close() // Defer Closing the database
+		defer sqliteDatabase.Close()
 
 		createPhotosTable(sqliteDatabase)
+
+		// Create repos table
+
+		sqliteDatabase, err = sql.Open("sqlite3", dbPath)
+		if err != nil {
+			panic(err)
+		}
+		defer sqliteDatabase.Close()
+
+		createReposTable(sqliteDatabase)
 	},
 }
 
@@ -113,15 +128,37 @@ func createPhotosTable(db *sql.DB) {
 		"source_filename" TEXT,
 		"date_taken" TEXT,
 		"status" TEXT
-	  );` // SQL Statement for Create Table
+	  );`
 
 	log.Println("Creating photos table...")
 
-	statement, err := db.Prepare(sql) // Prepare SQL Statement
+	statement, err := db.Prepare(sql)
 	if err != nil {
 		log.Fatal(err.Error())
 	}
-	statement.Exec() // Execute SQL Statements
+	statement.Exec()
 
 	log.Println("photos table created")
+}
+
+// createReposTable creates a table to keep track of the source repos added into the loupebox repo
+func createReposTable(db *sql.DB) {
+
+	sql := `CREATE TABLE repos (
+		"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT,		
+		"inserted_at" DATETIME,
+		"updated_at" DATETIME,
+		"path" TEXT,
+		"status" TEXT
+	  );`
+
+	log.Println("Creating repos table...")
+
+	statement, err := db.Prepare(sql)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+	statement.Exec()
+
+	log.Println("Created repos table")
 }

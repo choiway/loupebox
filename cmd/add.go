@@ -81,9 +81,13 @@ to quickly create a Cobra application.`,
 
 		} else {
 
+			// TODO: Add source repo here
+
 			log.Printf("Processing photos from %s\n", path)
 
 			addfiles(filenames)
+
+			// TODO: Update source repo here with flag
 		}
 
 	},
@@ -470,7 +474,7 @@ func CheckShaAndSourceRepo(db *sql.DB, photo Photo) bool {
 
 func InsertPhoto(db *sql.DB, photo Photo) error {
 	sql := `
-	INSERT OR REPLACE INTO photos(
+	INSERT INTO photos(
 		inserted_at,
 		sha_hash,
 		source_path,
@@ -531,4 +535,46 @@ func insertPhotoIntoDb(photo Photo) {
 	}
 
 	db.Close()
+}
+
+func InsertRepo(db *sql.DB, path string) (sql.Result, error) {
+	s := `
+	INSERT INTO repos(
+		inserted_at,
+		path,
+		status
+	) values(CURRENT_TIMESTAMP, ?, "started")
+	`
+	stmt, err := db.Prepare(s)
+	if err != nil {
+		return nil, err
+	}
+	defer stmt.Close()
+
+	var result sql.Result
+	result, err = stmt.Exec(path)
+	if err != nil {
+		return nil, err
+	}
+
+	log.Println("Successfully inserted repo")
+
+	return result, nil
+}
+
+func CheckIfRepoExists(db *sql.DB, path string) bool {
+	sql := `SELECT EXISTS (SELECT 1 FROM repos WHERE path = ?);`
+
+	var exists int
+
+	err := db.QueryRow(sql, path).Scan(&exists)
+	if err != nil {
+		panic(err)
+	}
+
+	if exists == 1 {
+		return true
+	}
+
+	return false
 }
