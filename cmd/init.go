@@ -109,6 +109,8 @@ func createPhotosTable(db *sql.DB) {
 		"sha_hash" TEXT,
 		"source_path" TEXT,
 		"path" TEXT,
+		"dir" TEXT,
+		"source_filename" TEXT,
 		"date_taken" TEXT,
 		"status" TEXT
 	  );` // SQL Statement for Create Table

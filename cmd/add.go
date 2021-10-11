@@ -25,6 +25,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -50,6 +51,13 @@ to quickly create a Cobra application.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("add called")
 
+		if len(args) == 0 {
+			fmt.Print("Please enter the full path to the source directory")
+			return
+		}
+
+		dryrun, _ := cmd.Flags().GetBool("dryrun")
+
 		for _, value := range args {
 			fmt.Println(value)
 		}
@@ -59,14 +67,25 @@ to quickly create a Cobra application.`,
 		path := args[0]
 
 		fmt.Println("hello, from lightbox")
-		fmt.Printf("Processing photos from %s\n", path)
 
 		filenames, err := walkdirectory(path)
 		if err != nil {
-			log.Fatalln("error reading path")
+			log.Fatalln("There was an error reading the path. It may not exist or you may have entered it incorrectly. Please check and try again.")
 		}
 
-		addfiles(filenames)
+		if dryrun {
+
+			log.Println("Doing dry run")
+
+			dry(filenames)
+
+		} else {
+
+			log.Printf("Processing photos from %s\n", path)
+
+			addfiles(filenames)
+		}
+
 	},
 }
 
@@ -77,11 +96,11 @@ func init() {
 
 	// Cobra supports Persistent Flags which will work for this command
 	// and all subcommands, e.g.:
-	// addCmd.PersistentFlags().String("foo", "", "A help for foo")
+	// addCmd.PersistentFlags().String("dryrun", "", "Runs just checks if filename and directory already exists")
 
 	// Cobra supports local flags which will only run when this command
 	// is called directly, e.g.:
-	// addCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+	addCmd.Flags().BoolP("dryrun", "d", false, "Help message for dryrun")
 }
 
 func walkdirectory(path string) ([]string, error) {
@@ -126,6 +145,45 @@ func addfiles(filenames []string) {
 			continue
 		}
 
+		extension := strings.ToLower(filepath.Ext(path))
+		filename := filepath.Base(path)
+		dir := filepath.Base(filepath.Dir(path))
+
+		db, err = openDatabase()
+		if err != nil {
+			panic(err)
+		}
+
+		dirFilenameExists := CheckIfDirFilenameExists(db, filename, dir)
+
+		db.Close()
+
+		if dirFilenameExists {
+			fmt.Print(".")
+			continue
+		}
+
+		ext := strings.ToLower(filepath.Ext(path))
+
+		if ext == ".json" {
+			continue
+		}
+
+		info, err := os.Stat(path)
+		if os.IsNotExist(err) {
+			log.Fatal("File does not exist.")
+		}
+
+		if info.IsDir() {
+			continue
+		}
+
+		if strings.Contains(path, "-edited") {
+			continue
+		}
+
+		// filename := filepath.Base(p) dir := path.Base(path.Dir(p))
+
 		// Open file and read exif
 
 		// log.Printf("Opening: %s\n", path)
@@ -142,15 +200,8 @@ func addfiles(filenames []string) {
 		}
 
 		f.Close()
-		extension := strings.ToLower(filepath.Ext(path))
-		// log.Printf("Extension type: %s\n", extension)
 
 		contentType := http.DetectContentType(content)
-
-		// log.Printf("Content Type: %s", contentType
-
-		// Optionally register camera makenote data parsing - currently Nikon and
-		// Canon are supported.
 		exif.RegisterParsers(mknote.All...)
 		exifData, err := exif.Decode(bytes.NewReader(content))
 
@@ -182,8 +233,6 @@ func addfiles(filenames []string) {
 		if err != nil {
 			log.Println(err)
 		}
-
-		filename := filepath.Base(path)
 
 		// camMake, _ := x.Get(exif.Make)
 		// fmt.Println(camMake.StringVal())
@@ -232,6 +281,7 @@ func addfiles(filenames []string) {
 			log.Println("Logging new source path")
 
 			photo.Status = "skipped"
+			photo.Path = ""
 
 			insertPhotoIntoDb(photo)
 
@@ -253,6 +303,50 @@ func addfiles(filenames []string) {
 		// Add to database
 		insertPhotoIntoDb(photo)
 	}
+}
+
+func dry(filenames []string) {
+	for _, p := range filenames {
+		filename := filepath.Base(p)
+		dir := filepath.Base(filepath.Dir(p))
+
+		// Check if path already exists in the database
+		db, err := openDatabase()
+		if err != nil {
+			panic(err)
+		}
+
+		dirFilenameExists := CheckIfDirFilenameExists(db, filename, dir)
+
+		db.Close()
+
+		if dirFilenameExists {
+			fmt.Print(".")
+			continue
+		}
+
+		ext := strings.ToLower(filepath.Ext(p))
+
+		if ext == ".json" {
+			continue
+		}
+
+		info, err := os.Stat(p)
+		if os.IsNotExist(err) {
+			log.Fatal("File does not exist.")
+		}
+
+		if info.IsDir() {
+			continue
+		}
+
+		if strings.Contains(p, "-edited") {
+			continue
+		}
+
+		log.Printf("New: %s %s\n", dir, filename)
+	}
+
 }
 
 func hashContent(content []byte) string {
@@ -340,6 +434,23 @@ func CheckIfPhotoExists(db *sql.DB, photo Photo) bool {
 	return false
 }
 
+func CheckIfDirFilenameExists(db *sql.DB, filename string, dir string) bool {
+	sql := `SELECT EXISTS (SELECT 1 FROM photos WHERE dir = ? AND source_filename = ?);`
+
+	var exists int
+
+	err := db.QueryRow(sql, dir, filename).Scan(&exists)
+	if err != nil {
+		panic(err)
+	}
+
+	if exists == 1 {
+		return true
+	}
+
+	return false
+}
+
 func CheckShaAndSourceRepo(db *sql.DB, photo Photo) bool {
 	sql := `SELECT EXISTS (SELECT 1 FROM photos WHERE sha_hash = ? AND source_path = ?);`
 
@@ -364,9 +475,11 @@ func InsertPhoto(db *sql.DB, photo Photo) error {
 		sha_hash,
 		source_path,
 		path,
+		dir,
+		source_filename,
 		date_taken,
 		status
-	) values(CURRENT_TIMESTAMP, ?, ?, ?, ?, ?)
+	) values(CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?)
 	`
 	stmt, err := db.Prepare(sql)
 	if err != nil {
@@ -374,11 +487,15 @@ func InsertPhoto(db *sql.DB, photo Photo) error {
 	}
 	defer stmt.Close()
 
-	_, err2 := stmt.Exec(photo.ShaHash, photo.SourcePath, photo.Path, photo.DateTaken, photo.Status)
+	ogFilename := path.Base(photo.SourcePath)
+	ogDir := path.Base(path.Dir(photo.SourcePath))
+
+	_, err2 := stmt.Exec(photo.ShaHash, photo.SourcePath, photo.Path, ogDir, ogFilename, photo.DateTaken, photo.Status)
 	if err2 != nil {
 		return err2
 	}
-	log.Println("Added photo to database")
+
+	log.Println("Successfully inserted photo record")
 
 	return nil
 }
@@ -412,4 +529,6 @@ func insertPhotoIntoDb(photo Photo) {
 	if err != nil {
 		panic(err)
 	}
+
+	db.Close()
 }
