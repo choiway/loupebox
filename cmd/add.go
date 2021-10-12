@@ -352,14 +352,29 @@ func addfiles(filenames []string) {
 		}
 
 		// Generate thumbnail
+		if contentType == "video/avi" {
 
-		thumbFilename := fmt.Sprintf("%s/.loupebox/cache/%s.jpeg", currentPath, sha)
-		cmd := exec.Command("darktable-cli", path, thumbFilename, "--height", "300")
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		err = cmd.Run()
-		if err != nil {
-			log.Fatalf("cmd.Run() failed with %s\n", err)
+			// TODO: Add thumbnail generator for avi
+
+			log.Printf("No thumbnail generated for  %s", path)
+
+		} else if contentType == "application/octet-stream" && extension == ".mov" {
+
+			// TODO: Add thumbnail generator for mov
+
+			log.Printf("No thumbnail generated for  %s", path)
+
+		} else {
+
+			thumbFilename := fmt.Sprintf("%s/.loupebox/cache/%s.jpeg", currentPath, sha)
+			cmd := exec.Command("darktable-cli", path, thumbFilename, "--height", "300")
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			err = cmd.Run()
+			if err != nil {
+				log.Fatalf("cmd.Run() failed with %s\n", err)
+			}
+
 		}
 
 		log.Printf("Copied %s to %s\n", path, newPhotoPath)
