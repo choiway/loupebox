@@ -17,13 +17,17 @@ package cmd
 
 import (
 	"bufio"
-	"database/sql"
+	"context"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"os"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v4/pgxpool"
 	_ "github.com/mattn/go-sqlite3" // Import go-sqlite3 library
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 // initCmd represents the init command
@@ -44,24 +48,49 @@ to quickly create a Cobra application.`,
 		}
 		fmt.Printf("Working directory: %s\n", currentpath)
 
+		// Sqlite init
 		_, err = os.Stat(".loupebox")
 		if os.IsNotExist(err) {
+
 			initializeLoupebox()
+			createTables()
 		} else {
+
 			scanner := bufio.NewScanner(os.Stdin)
 
 			fmt.Print(`Loupebox has already been initialized in this foler. Do you want to erase
-the existing info and reinitialize Loupebox? [Y/n]:`)
+		the existing info and reinitialize Loupebox? [Y/n]:`)
 			scanner.Scan()
 			text := scanner.Text()
 
 			if text == "Y" {
 				fmt.Println("Reinitializing...")
 				initializeLoupebox()
+				createTables()
 			} else {
 				fmt.Println("Aborting initialization")
 			}
 		}
+
+		// Sqlite init
+		// 		_, err = os.Stat(".loupebox")
+		// 		if os.IsNotExist(err) {
+		// 			initializeLoupebox()
+		// 		} else {
+		// 			scanner := bufio.NewScanner(os.Stdin)
+
+		// 			fmt.Print(`Loupebox has already been initialized in this foler. Do you want to erase
+		// the existing info and reinitialize Loupebox? [Y/n]:`)
+		// 			scanner.Scan()
+		// 			text := scanner.Text()
+
+		// 			if text == "Y" {
+		// 				fmt.Println("Reinitializing...")
+		// 				initializeLoupebox()
+		// 			} else {
+		// 				fmt.Println("Aborting initialization")
+		// 			}
+		// 		}
 
 	},
 }
@@ -80,6 +109,14 @@ func init() {
 	// initCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 }
 
+type Config struct {
+	Repo Repo `yaml:"repo"`
+}
+
+type Repo struct {
+	ID uuid.UUID `yaml:"id"`
+}
+
 func initializeLoupebox() {
 	// Remove existing .loupebox directory
 
@@ -96,12 +133,6 @@ func initializeLoupebox() {
 		log.Fatal(err)
 	}
 
-	// initilaize loupebox database
-
-	dbPath := ".loupebox/loupebox.db"
-
-	initializeDatabase(dbPath)
-
 	// Create .cache folder for thumbnails
 
 	err = os.Mkdir(".loupebox/cache", 0755)
@@ -109,86 +140,209 @@ func initializeLoupebox() {
 		log.Fatal(err)
 	}
 
-	// Create photos table
+	// generate id for repo and save config to yaml
 
-	sqliteDatabase, err := sql.Open("sqlite3", dbPath)
-	if err != nil {
-		panic(err)
+	config := Config{
+		Repo: Repo{
+			ID: uuid.New(),
+		},
 	}
-	defer sqliteDatabase.Close()
 
-	createPhotosTable(sqliteDatabase)
+	data, err := yaml.Marshal(&config)
 
-	// Create repos table
-
-	sqliteDatabase, err = sql.Open("sqlite3", dbPath)
 	if err != nil {
-		panic(err)
-	}
-	defer sqliteDatabase.Close()
 
-	createReposTable(sqliteDatabase)
+		log.Fatal(err)
+	}
+
+	err = ioutil.WriteFile(".loupebox/config.yaml", data, 0755)
+
+	if err != nil {
+
+		log.Fatal(err)
+	}
+
+	log.Println("Create config file")
+
 }
 
-func initializeDatabase(dbPath string) {
-	os.Remove(dbPath)
+func createTables() {
+	pool := DbConnect()
 
-	log.Println("Creating loupebox.db...")
+	defer pool.Close()
+	// TODO: Add check if database exists
 
-	file, err := os.Create(dbPath) // Create SQLite file
-	if err != nil {
-		log.Fatal(err.Error())
-	}
+	// TODO: Add check if tables already exist and handle accordingly
 
-	file.Close()
-
-	log.Println("loupebox.db created")
+	pqCreatePhotosTable(pool)
+	pgCreateReposTable(pool)
 }
 
-func createPhotosTable(db *sql.DB) {
+// func initializeDatabase(dbPath string) {
+// 	os.Remove(dbPath)
 
+// 	log.Println("Creating loupebox.db...")
+
+// 	file, err := os.Create(dbPath) // Create SQLite file
+// 	if err != nil {
+// 		log.Fatal(err.Error())
+// 	}
+// }
+
+// func initializeLoupebox() {
+// 	// Remove existing .loupebox directory
+
+// 	// TODO: should add check if .loupebox already exists
+// 	err := os.RemoveAll(".loupebox")
+// 	if err != nil {
+// 		log.Fatal(err)
+// 	}
+
+// 	// Create new loupebox directory
+
+// 	err = os.Mkdir(".loupebox", 0755)
+// 	if err != nil {
+// 		log.Fatal(err)
+// 	}
+
+// 	// initilaize loupebox database
+
+// 	dbPath := ".loupebox/loupebox.db"
+
+// 	initializeDatabase(dbPath)
+
+// 	// Create .cache folder for thumbnails
+
+// 	err = os.Mkdir(".loupebox/cache", 0755)
+// 	if err != nil {
+// 		log.Fatal(err)
+// 	}
+
+// 	// Create photos table
+
+// 	sqliteDatabase, err := sql.Open("sqlite3", dbPath)
+// 	if err != nil {
+// 		panic(err)
+// 	}
+// 	defer sqliteDatabase.Close()
+
+// 	createPhotosTable(sqliteDatabase)
+
+// 	// Create repos table
+
+// 	sqliteDatabase, err = sql.Open("sqlite3", dbPath)
+// 	if err != nil {
+// 		panic(err)
+// 	}
+// 	defer sqliteDatabase.Close()
+
+// 	createReposTable(sqliteDatabase)
+// }
+
+// func initializeDatabase(dbPath string) {
+// 	os.Remove(dbPath)
+
+// 	log.Println("Creating loupebox.db...")
+
+// 	file, err := os.Create(dbPath) // Create SQLite file
+// 	if err != nil {
+// 		log.Fatal(err.Error())
+// 	}
+
+// 	file.Close()
+
+// 	log.Println("loupebox.db created")
+// }
+
+// func createPhotosTable(db *sql.DB) {
+
+// 	sql := `CREATE TABLE photos (
+// 		"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT,
+// 		"inserted_at" DATETIME,
+// 		"updated_at" DATETIME,
+// 		"sha_hash" TEXT,
+// 		"source_path" TEXT,
+// 		"path" TEXT,
+// 		"dir" TEXT,
+// 		"source_filename" TEXT,
+// 		"date_taken" TEXT,
+// 		"status" TEXT
+// 	  );`
+
+// 	log.Println("Creating photos table...")
+
+// 	statement, err := db.Prepare(sql)
+// 	if err != nil {
+// 		log.Fatal(err.Error())
+// 	}
+// 	statement.Exec()
+
+// 	log.Println("photos table created")
+// }
+
+func pqCreatePhotosTable(conn *pgxpool.Pool) {
 	sql := `CREATE TABLE photos (
-		"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT,		
-		"inserted_at" DATETIME,
-		"updated_at" DATETIME,
-		"sha_hash" TEXT,
-		"source_path" TEXT,
-		"path" TEXT,
-		"dir" TEXT,
-		"source_filename" TEXT,
-		"date_taken" TEXT,
-		"status" TEXT
+		id SERIAL PRIMARY KEY,		
+		inserted_at TIMESTAMP,
+		updated_at TIMESTAMP,
+		repo_id UUID,
+		sha_hash TEXT,
+		source_path TEXT,
+		path TEXT,
+		dir TEXT,
+		source_filename TEXT,
+		date_taken TEXT,
+		status TEXT
 	  );`
 
 	log.Println("Creating photos table...")
 
-	statement, err := db.Prepare(sql)
+	_, err := conn.Exec(context.Background(), sql)
 	if err != nil {
 		log.Fatal(err.Error())
 	}
-	statement.Exec()
 
 	log.Println("photos table created")
 }
 
 // createReposTable creates a table to keep track of the source repos added into the loupebox repo
-func createReposTable(db *sql.DB) {
+// func createReposTable(db *sql.DB) {
 
-	sql := `CREATE TABLE repos (
-		"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT,		
-		"inserted_at" DATETIME,
-		"updated_at" DATETIME,
-		"path" TEXT,
-		"status" TEXT
+// 	sql := `CREATE TABLE repos (
+// 		"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT,
+// 		"inserted_at" DATETIME,
+// 		"updated_at" DATETIME,
+// 		"path" TEXT,
+// 		"status" TEXT
+// 	  );`
+
+// 	log.Println("Creating repos table...")
+
+// 	statement, err := db.Prepare(sql)
+// 	if err != nil {
+// 		log.Fatal(err.Error())
+// 	}
+// 	statement.Exec()
+
+// 	log.Println("Created repos table")
+// }
+
+func pgCreateReposTable(conn *pgxpool.Pool) {
+
+	sql := `CREATE TABLE imports (
+		id SERIAL PRIMARY KEY,		
+		inserted_at TIMESTAMP,
+		updated_at TIMESTAMP,
+		path TEXT,
+		status TEXT
 	  );`
 
-	log.Println("Creating repos table...")
+	log.Println("Creating imports table...")
 
-	statement, err := db.Prepare(sql)
+	_, err := conn.Exec(context.Background(), sql)
 	if err != nil {
 		log.Fatal(err.Error())
 	}
-	statement.Exec()
 
-	log.Println("Created repos table")
+	log.Println("Created import table")
 }
