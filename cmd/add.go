@@ -17,8 +17,8 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
-	"database/sql"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -32,9 +32,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/rwcarlsen/goexif/exif"
 	"github.com/rwcarlsen/goexif/mknote"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 // addCmd represents the add command
@@ -76,7 +79,7 @@ to quickly create a Cobra application.`,
 
 		if dryrun {
 
-			log.Println("Doing dry run")
+			log.Println("Not working for now. Doing dry run")
 
 			dry(filenames)
 
@@ -84,37 +87,45 @@ to quickly create a Cobra application.`,
 
 			// Add current repo to repo database
 			// This is used to track recent adds
+			yfile, err := ioutil.ReadFile(".loupebox/config.yaml")
 
-			db, err := openDatabase()
 			if err != nil {
-				panic(err)
+
+				log.Fatal(err)
 			}
 
-			result, err := InsertRepo(db, path)
+			var config Config
+			err = yaml.Unmarshal(yfile, &config)
+
+			if err != nil {
+
+				log.Fatal(err)
+			}
+
+			// Log current import
+
+			conn := DbConnect()
+
+			lastInsertedId, err := InsertImport(conn, path, config.Repo.ID)
 			if err != nil {
 				log.Fatal(err)
 			}
 
-			db.Close()
+			conn.Close()
 
-			lastInsertedId, err := result.LastInsertId()
-			if err != nil {
-				log.Fatal(err)
-			}
+			// Add photos
 
 			log.Printf("Adding photos from %s\n", path)
 
-			addfiles(filenames)
+			addfiles(filenames, config.Repo.ID)
 
 			// Update repo with completed status
 
-			db, err = openDatabase()
-			if err != nil {
-				panic(err)
-			}
+			conn = DbConnect()
 
-			UpdateRepoWithCompleteStatus(db, lastInsertedId)
-			db.Close()
+			UpdateImportWithCompleteStatus(conn, lastInsertedId)
+
+			conn.Close()
 
 			log.Printf("Finished adding %s", path)
 		}
@@ -158,31 +169,33 @@ func walkdirectory(path string) ([]string, error) {
 	return paths, nil
 }
 
-func addfiles(filenames []string) {
+// addfiles uses sync.WaitGroup to create multiple import jobs
+func addfiles(filenames []string, repoID uuid.UUID) {
 
 	throttle := make(chan int, 4)
 	var wg sync.WaitGroup
+
 	for _, f := range filenames {
 		throttle <- 1 // whatever number
 		wg.Add(1)
-		go addPhoto(f, &wg, throttle)
+		go addPhoto(f, repoID, &wg, throttle)
 	}
+
 	wg.Wait()
 }
 
-func addPhoto(path string, wg *sync.WaitGroup, throttle chan int) {
+func addPhoto(f string, repoID uuid.UUID, wg *sync.WaitGroup, throttle chan int) {
+	defer wg.Done() // Need this here clean up once the wait group close
 
 	var tm time.Time
 
 	// Check if path already exists in the database
-	db, err := openDatabase()
-	if err != nil {
-		panic(err)
-	}
 
-	pathExists := CheckIfPathExists(db, path)
+	conn := DbConnect()
 
-	db.Close()
+	pathExists := CheckIfPathExists(conn, f)
+
+	conn.Close()
 
 	if pathExists {
 		fmt.Print(".")
@@ -194,18 +207,15 @@ func addPhoto(path string, wg *sync.WaitGroup, throttle chan int) {
 	// This checks for the intance when the source repo path might be different but the
 	// local directory and photo name are the same as one that was already imported
 
-	extension := strings.ToLower(filepath.Ext(path))
-	filename := filepath.Base(path)
-	dir := filepath.Base(filepath.Dir(path))
+	extension := strings.ToLower(filepath.Ext(f))
+	filename := filepath.Base(f)
+	dir := filepath.Base(filepath.Dir(f))
 
-	db, err = openDatabase()
-	if err != nil {
-		panic(err)
-	}
+	conn = DbConnect()
 
-	dirFilenameExists := CheckIfDirFilenameExists(db, filename, dir)
+	dirFilenameExists := CheckIfDirFilenameExists(conn, filename, dir)
 
-	db.Close()
+	conn.Close()
 
 	if dirFilenameExists {
 		fmt.Print(".")
@@ -215,7 +225,7 @@ func addPhoto(path string, wg *sync.WaitGroup, throttle chan int) {
 
 	// Skips extensions with json
 
-	ext := strings.ToLower(filepath.Ext(path))
+	ext := strings.ToLower(filepath.Ext(f))
 
 	if ext == ".json" {
 		<-throttle
@@ -225,7 +235,7 @@ func addPhoto(path string, wg *sync.WaitGroup, throttle chan int) {
 	// Checks is path is s directory
 	// Skip to next path if it is a direcotry
 
-	info, err := os.Stat(path)
+	info, err := os.Stat(f)
 	if os.IsNotExist(err) {
 		// This throws an error is the source path doesn't exist
 		log.Fatal("File does not exist.")
@@ -240,25 +250,25 @@ func addPhoto(path string, wg *sync.WaitGroup, throttle chan int) {
 	// Handles edited files and duplicates from google photos
 	// Sha won't catch thes files as different
 
-	if strings.Contains(path, "-edited") {
+	if strings.Contains(f, "-edited") {
 		<-throttle
 		return
 	}
 
 	// Open file, detect content type and read exif
 
-	f, err := os.Open(path)
+	file, err := os.Open(f)
 	if err != nil {
-		log.Printf("An error ocurred while trying to open: %s\n", path)
+		log.Printf("An error ocurred while trying to open: %s\n", f)
 		log.Println(err)
 	}
 
-	content, err := ioutil.ReadAll(f)
+	content, err := ioutil.ReadAll(file)
 	if err != nil {
 		fmt.Println(err)
 	}
 
-	f.Close()
+	file.Close()
 
 	contentType := http.DetectContentType(content)
 	exif.RegisterParsers(mknote.All...)
@@ -309,35 +319,29 @@ func addPhoto(path string, wg *sync.WaitGroup, throttle chan int) {
 
 	photo := Photo{
 		ShaHash:    sha,
-		SourcePath: path,
+		RepoID:     repoID,
+		SourcePath: f,
 		Path:       newPhotoPath,
 		DateTaken:  tm,
 	}
 
 	// Check if photo already exists in database
+	conn = DbConnect()
 
-	db, err = openDatabase()
-	if err != nil {
-		panic(err)
-	}
+	photoExists := CheckIfPhotoExists(conn, photo)
 
-	photoExists := CheckIfPhotoExists(db, photo)
-
-	db.Close()
+	conn.Close()
 
 	// Add photo to repo
 
 	if photoExists {
 		fmt.Println("Photo already exists, skipping copy")
 
-		db, err := openDatabase()
-		if err != nil {
-			panic(err)
-		}
+		conn = DbConnect()
 
-		sourcePathExists := CheckShaAndSourceRepo(db, photo)
+		sourcePathExists := CheckShaAndSourceRepo(conn, photo)
 
-		db.Close()
+		conn.Close()
 
 		if sourcePathExists {
 			log.Println("Source path already exists in database, skipping...")
@@ -403,7 +407,7 @@ func addPhoto(path string, wg *sync.WaitGroup, throttle chan int) {
 
 	// }
 
-	log.Printf("Copied %s to %s\n", path, newPhotoPath)
+	log.Printf("Copied %s to %s\n", f, newPhotoPath)
 
 	// Add to database
 
@@ -417,14 +421,11 @@ func dry(filenames []string) {
 		dir := filepath.Base(filepath.Dir(p))
 
 		// Check if path already exists in the database
-		db, err := openDatabase()
-		if err != nil {
-			panic(err)
-		}
+		conn := DbConnect()
 
-		dirFilenameExists := CheckIfDirFilenameExists(db, filename, dir)
+		dirFilenameExists := CheckIfDirFilenameExists(conn, filename, dir)
 
-		db.Close()
+		conn.Close()
 
 		if dirFilenameExists {
 			fmt.Print(".")
@@ -492,92 +493,68 @@ func doubleDigitDay(day int) string {
 	return strconv.Itoa(day)
 }
 
-func InitDB(filepath string) *sql.DB {
-	db, err := sql.Open("sqlite3", filepath)
+func CheckIfPathExists(conn *pgxpool.Pool, path string) bool {
+	sql := `SELECT EXISTS (SELECT 1 FROM photos WHERE source_path = $1);`
 
+	var exists bool
+
+	err := conn.QueryRow(context.Background(), sql, path).Scan(&exists)
+	// fmt.Printf("row: %#v\n", row.Scan())
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	return exists
+}
+
+func CheckIfPhotoExists(conn *pgxpool.Pool, photo Photo) bool {
+	sql := `SELECT EXISTS (SELECT 1 FROM photos where sha_hash = $1);`
+
+	var exists bool
+
+	err := conn.QueryRow(context.Background(), sql, photo.ShaHash).Scan(&exists)
 	if err != nil {
 		panic(err)
 	}
 
-	if db == nil {
-		panic("db nil")
-	}
-
-	return db
+	return exists
 }
 
-func CheckIfPathExists(db *sql.DB, path string) bool {
-	sql := `SELECT EXISTS (SELECT 1 FROM photos WHERE source_path = ?);`
+func CheckIfDirFilenameExists(conn *pgxpool.Pool, filename string, dir string) bool {
+	sql := `SELECT EXISTS (SELECT 1 FROM photos WHERE dir = $1 AND source_filename = $2);`
 
-	var exists int
+	var exists bool
 
-	err := db.QueryRow(sql, path).Scan(&exists)
+	err := conn.QueryRow(context.Background(), sql, dir, filename).Scan(&exists)
 	if err != nil {
 		panic(err)
 	}
 
-	if exists == 1 {
-		return true
-	}
-
-	return false
+	return exists
 }
 
-func CheckIfPhotoExists(db *sql.DB, photo Photo) bool {
-	sql := `SELECT EXISTS (SELECT 1 FROM photos where sha_hash = ?);`
+func CheckShaAndSourceRepo(conn *pgxpool.Pool, photo Photo) bool {
+	sql := `SELECT EXISTS (SELECT 1 FROM photos WHERE sha_hash = $1 AND source_path = $2);`
 
-	var exists int
+	var exists bool
 
-	err := db.QueryRow(sql, photo.ShaHash).Scan(&exists)
+	err := conn.QueryRow(context.Background(), sql, photo.ShaHash, photo.SourcePath).Scan(&exists)
 	if err != nil {
 		panic(err)
 	}
 
-	if exists == 1 {
-		return true
-	}
-
-	return false
+	return exists
 }
 
-func CheckIfDirFilenameExists(db *sql.DB, filename string, dir string) bool {
-	sql := `SELECT EXISTS (SELECT 1 FROM photos WHERE dir = ? AND source_filename = ?);`
+func InsertPhoto(conn *pgxpool.Pool, p Photo) error {
+	ogFilename := path.Base(p.SourcePath)
+	ogDir := path.Base(path.Dir(p.SourcePath))
 
-	var exists int
-
-	err := db.QueryRow(sql, dir, filename).Scan(&exists)
-	if err != nil {
-		panic(err)
-	}
-
-	if exists == 1 {
-		return true
-	}
-
-	return false
-}
-
-func CheckShaAndSourceRepo(db *sql.DB, photo Photo) bool {
-	sql := `SELECT EXISTS (SELECT 1 FROM photos WHERE sha_hash = ? AND source_path = ?);`
-
-	var exists int
-
-	err := db.QueryRow(sql, photo.ShaHash, photo.SourcePath).Scan(&exists)
-	if err != nil {
-		panic(err)
-	}
-
-	if exists == 1 {
-		return true
-	}
-
-	return false
-}
-
-func InsertPhoto(db *sql.DB, photo Photo) error {
 	sql := `
 	INSERT INTO photos(
 		inserted_at,
+		updated_at, 
+		repo_id, 
 		sha_hash,
 		source_path,
 		path,
@@ -585,35 +562,16 @@ func InsertPhoto(db *sql.DB, photo Photo) error {
 		source_filename,
 		date_taken,
 		status
-	) values(CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?)
+	) values(now(), now(), $1, $2, $3, $4, $5, $6, $7, $8)
 	`
-	stmt, err := db.Prepare(sql)
+	_, err := conn.Exec(context.Background(), sql, p.RepoID, p.ShaHash, p.SourcePath, p.Path, ogDir, ogFilename, p.DateTaken, p.Status)
 	if err != nil {
 		return err
 	}
 
-	ogFilename := path.Base(photo.SourcePath)
-	ogDir := path.Base(path.Dir(photo.SourcePath))
-
-	_, err2 := stmt.Exec(photo.ShaHash, photo.SourcePath, photo.Path, ogDir, ogFilename, photo.DateTaken, photo.Status)
-	if err2 != nil {
-		return err2
-	}
-	stmt.Close()
-
 	log.Println("Successfully inserted photo record")
 
 	return nil
-}
-
-func openDatabase() (*sql.DB, error) {
-	db, err := sql.Open("sqlite3", ".loupebox/loupebox.db")
-
-	if err != nil {
-		return nil, err
-	}
-
-	return db, nil
 }
 
 func generateFileName(filename string, sha string) string {
@@ -626,51 +584,45 @@ func generateFileName(filename string, sha string) string {
 }
 
 func insertPhotoIntoDb(photo Photo) {
-	db, err := openDatabase()
+	pool := DbConnect()
+
+	err := InsertPhoto(pool, photo)
 	if err != nil {
 		panic(err)
 	}
 
-	err = InsertPhoto(db, photo)
-	if err != nil {
-		panic(err)
-	}
-
-	db.Close()
+	pool.Close()
 }
 
-func InsertRepo(db *sql.DB, path string) (sql.Result, error) {
+func InsertImport(conn *pgxpool.Pool, path string, loupeboxID uuid.UUID) (int64, error) {
 	s := `
-	INSERT INTO repos(
+	INSERT INTO imports(
 		inserted_at,
 		updated_at,
+		repo_id, 
 		path,
 		status
-	) values(CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, "started")
+	) values(now(), now(), $1, $2, 'started')
+	RETURNING id
 	`
-	stmt, err := db.Prepare(s)
+	var lastInsertID int64
+
+	err := conn.QueryRow(context.Background(), s, loupeboxID, path).Scan(&lastInsertID)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 
-	var result sql.Result
-	result, err = stmt.Exec(path)
-	if err != nil {
-		return nil, err
-	}
-	stmt.Close()
+	log.Println("Successfully inserted import event")
 
-	log.Println("Successfully inserted repo")
-
-	return result, nil
+	return lastInsertID, nil
 }
 
-func CheckIfRepoExists(db *sql.DB, path string) bool {
-	sql := `SELECT EXISTS (SELECT 1 FROM repos WHERE path = ?);`
+func CheckIfImportExists(conn *pgxpool.Pool, path string, loupeboxID uuid.UUID) bool {
+	sql := `SELECT EXISTS (SELECT 1 FROM imports WHERE path = $1);`
 
 	var exists int
 
-	err := db.QueryRow(sql, path).Scan(&exists)
+	err := conn.QueryRow(context.Background(), sql, path).Scan(&exists)
 	if err != nil {
 		panic(err)
 	}
@@ -682,21 +634,14 @@ func CheckIfRepoExists(db *sql.DB, path string) bool {
 	return false
 }
 
-func UpdateRepoWithCompleteStatus(db *sql.DB, id int64) {
-	s := `UPDATE repos 
-		SET status = ?, 
-			updated_at = CURRENT_TIMESTAMP
-		WHERE id = ?`
+func UpdateImportWithCompleteStatus(conn *pgxpool.Pool, id int64) {
+	s := `UPDATE imports 
+		SET status = $1, 
+			updated_at = now()
+		WHERE id = $2`
 
-	stmt, err := db.Prepare(s)
+	_, err := conn.Exec(context.Background(), s, "completed", id)
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	_, err = stmt.Exec("completed", id)
-	if err != nil {
-		log.Fatal(err)
-	}
-	stmt.Close()
-
 }
