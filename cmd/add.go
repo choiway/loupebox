@@ -42,19 +42,20 @@ import (
 
 // addCmd represents the add command
 var addCmd = &cobra.Command{
-	Use:   "add",
-	Short: "A brief description of your command",
-	Long: `A longer description that spans multiple lines and likely contains examples
-and usage of using your command. For example:
+	Use:   "add [path/to/source]",
+	Short: "Add photos to your repo",
+	Long: `Add photos to an existing loupebox repo. Run the following command from a directory that 
+was already initialized:
 
-loupebox add /source/dir
+loupebox add /media/external/keepsakes
 
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
+You can also pass the --dryrun flag which will check if the photos in your source directory already 
+exist in the loupebox repo without copying. This is a quick way to check if there are new photos in
+in the source directory.
+`,
+
+	Args: cobra.MinimumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("add called")
-
 		if len(args) == 0 {
 			fmt.Print("Please enter the full path to the source directory")
 			return
@@ -62,15 +63,9 @@ to quickly create a Cobra application.`,
 
 		dryrun, _ := cmd.Flags().GetBool("dryrun")
 
-		for _, value := range args {
-			fmt.Println(value)
-		}
-
 		// Get path argument
 		// Will throw an error if it iesn't a valid path but should
 		path := args[0]
-
-		fmt.Println("hello, from lightbox")
 
 		filenames, err := walkdirectory(path)
 		if err != nil {
@@ -79,7 +74,7 @@ to quickly create a Cobra application.`,
 
 		if dryrun {
 
-			log.Println("Not working for now. Doing dry run")
+			log.Println("Doing dry run")
 
 			dry(filenames)
 
@@ -91,7 +86,7 @@ to quickly create a Cobra application.`,
 
 			if err != nil {
 
-				log.Fatal(err)
+				log.Fatal("Can't find the config file. Make sure you're in the correct directory or initialize the repo before trying to add photos.")
 			}
 
 			var config Config
@@ -127,6 +122,7 @@ to quickly create a Cobra application.`,
 
 			conn.Close()
 
+			fmt.Print("\n")
 			log.Printf("Finished adding %s", path)
 		}
 
@@ -140,11 +136,11 @@ func init() {
 
 	// Cobra supports Persistent Flags which will work for this command
 	// and all subcommands, e.g.:
-	// addCmd.PersistentFlags().String("dryrun", "", "Runs just checks if filename and directory already exists")
+	// addCmd.PersistentFlags().String("dir", "", "Path to the source directory")
 
 	// Cobra supports local flags which will only run when this command
 	// is called directly, e.g.:
-	addCmd.Flags().BoolP("dryrun", "d", false, "Help message for dryrun")
+	addCmd.Flags().BoolP("dryrun", "r", false, "Will check if photos already exist in the repo without copying.")
 }
 
 func walkdirectory(path string) ([]string, error) {
@@ -285,12 +281,26 @@ func addPhoto(f string, repoID uuid.UUID, wg *sync.WaitGroup, throttle chan int)
 
 			tm, _ = time.Parse("2006-01-02", "1971-01-19")
 
-		} else {
+		} else if contentType == "application/octet-stream" && extension == ".mp4" {
 
+			tm, _ = time.Parse("2006-01-02", "1971-07-30")
+
+		} else if contentType == "video/mp4" && extension == ".mp4" {
+
+			tm, _ = time.Parse("2006-01-02", "1971-07-30")
+
+		} else if contentType == "image/jpeg" {
+
+			tm, _ = time.Parse("2006-01-02", "1971-09-19")
+
+		} else if contentType == "image/png" {
+
+			tm, _ = time.Parse("2006-01-02", "1971-09-17")
+
+		} else {
 			fmt.Print("x")
 			<-throttle
 			return
-
 		}
 	} else {
 
@@ -326,6 +336,7 @@ func addPhoto(f string, repoID uuid.UUID, wg *sync.WaitGroup, throttle chan int)
 	}
 
 	// Check if photo already exists in database
+	// Here we check by the sha hash
 	conn = DbConnect()
 
 	photoExists := CheckIfPhotoExists(conn, photo)
@@ -335,7 +346,8 @@ func addPhoto(f string, repoID uuid.UUID, wg *sync.WaitGroup, throttle chan int)
 	// Add photo to repo
 
 	if photoExists {
-		fmt.Println("Photo already exists, skipping copy")
+		fmt.Print("\n")
+		log.Println("Photo already exists, skipping copy")
 
 		conn = DbConnect()
 
@@ -406,7 +418,7 @@ func addPhoto(f string, repoID uuid.UUID, wg *sync.WaitGroup, throttle chan int)
 	// 	}
 
 	// }
-
+	fmt.Print("\n")
 	log.Printf("Copied %s to %s\n", f, newPhotoPath)
 
 	// Add to database
@@ -434,9 +446,43 @@ func dry(filenames []string) {
 
 		ext := strings.ToLower(filepath.Ext(p))
 
+		// Exclude extensions
+
 		if ext == ".json" {
 			continue
 		}
+
+		if ext == ".ini" {
+			continue
+		}
+
+		if ext == ".db" {
+			continue
+		}
+
+		if ext == ".url" {
+			continue
+		}
+
+		if ext == ".rss" {
+			continue
+		}
+
+		if ext == ".ofa" {
+			continue
+		}
+
+		// Exclude filenames
+
+		if filename == ".DS_Store" {
+			continue
+		}
+
+		if filename == ".BridgeSort" {
+			continue
+		}
+
+		// Stat checks
 
 		info, err := os.Stat(p)
 		if os.IsNotExist(err) {
@@ -569,7 +615,7 @@ func InsertPhoto(conn *pgxpool.Pool, p Photo) error {
 		return err
 	}
 
-	log.Println("Successfully inserted photo record")
+	log.Printf("Successfully inserted photo record: %s\n", p.SourcePath)
 
 	return nil
 }

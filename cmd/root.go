@@ -12,7 +12,8 @@ var (
 	rootCmd = &cobra.Command{
 		Use:   "loupebox",
 		Short: "Photo aggregation utility",
-		Long:  `Loupebox aggregates your photos into a single folder organized by the date taken.`,
+		Long:  `Loupebox aggregates your photos into a single folder organized by the date taken
+and avoids copying duplicates`,
 	}
 )
 
