@@ -53,7 +53,7 @@ to quickly create a Cobra application.`,
 		if os.IsNotExist(err) {
 
 			initializeLoupebox()
-			createTables()
+			// createTables()
 		} else {
 
 			scanner := bufio.NewScanner(os.Stdin)
@@ -66,7 +66,7 @@ to quickly create a Cobra application.`,
 			if text == "Y" {
 				fmt.Println("Reinitializing...")
 				initializeLoupebox()
-				createTables()
+				// createTables()
 			} else {
 				fmt.Println("Aborting initialization")
 			}
@@ -142,7 +142,15 @@ func initializeLoupebox() {
 		log.Fatal(err)
 	}
 
-	log.Println("Create config file")
+	// Touch empty file to photos cache
+
+	err = ioutil.WriteFile(".loupebox/cache/photos", []byte(""), 0755)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	log.Println("Created config file")
 
 }
 

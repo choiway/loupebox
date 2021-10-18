@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/csv"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -99,28 +100,29 @@ in the source directory.
 
 			// Log current import
 
-			conn := DbConnect()
+			// conn := DbConnect()
 
-			lastInsertedId, err := InsertImport(conn, path, config.Repo.ID)
-			if err != nil {
-				log.Fatal(err)
-			}
+			// lastInsertedId, err := InsertImport(conn, path, config.Repo.ID)
+			// if err != nil {
+			// 	log.Fatal(err)
+			// }
 
-			conn.Close()
+			// conn.Close()
 
 			// Add photos
 
 			log.Printf("Adding photos from %s\n", path)
 
-			addfiles(filenames, config.Repo.ID)
+			// addfiles(filenames, config.Repo.ID)
+			addfilesWithHash(filenames)
 
 			// Update repo with completed status
 
-			conn = DbConnect()
+			// conn = DbConnect()
 
-			UpdateImportWithCompleteStatus(conn, lastInsertedId)
+			// UpdateImportWithCompleteStatus(conn, lastInsertedId)
 
-			conn.Close()
+			// conn.Close()
 
 			fmt.Print("\n")
 			log.Printf("Finished adding %s", path)
@@ -178,6 +180,71 @@ func addfiles(filenames []string, repoID uuid.UUID) {
 	}
 
 	wg.Wait()
+}
+
+func addfilesWithHash(filenames []string) {
+	photoMap := make(map[string]Photo)
+
+	csvFile, err := os.Open(".loupebox/cache/photos")
+	if err != nil {
+		panic(err)
+	}
+	defer csvFile.Close()
+
+	csvReader := csv.NewReader(csvFile)
+
+	rows, err := csvReader.ReadAll() // `rows` is of type [][]string
+	if err != nil {
+		panic(err)
+	}
+
+	for _, row := range rows {
+
+		t, _ := time.Parse("2006-01-02", row[3])
+
+		p := Photo{
+			ShaHash:    row[0],
+			SourcePath: row[1],
+			Path:       row[2],
+			DateTaken:  t,
+		}
+
+		photoMap[p.ShaHash] = p
+	}
+
+	// Start processing
+
+	throttle := make(chan int, 1)
+	var wg sync.WaitGroup
+
+	for _, f := range filenames {
+		throttle <- 1 // whatever number
+		wg.Add(1)
+		go addPhotosUsingMap(f, &wg, throttle, &photoMap)
+	}
+
+	wg.Wait()
+
+	// Persists photomap to disk
+
+	var pps [][]string
+	for _, p := range photoMap {
+		t := p.DateTaken.Format("2006-02-01")
+		pps = append(pps, []string{p.ShaHash, p.SourcePath, p.Path, t})
+	}
+
+	f, e := os.Create(".loupebox/cache/photos")
+	if e != nil {
+		fmt.Println(e)
+	}
+
+	writer := csv.NewWriter(f)
+
+	e = writer.WriteAll(pps)
+	if e != nil {
+		fmt.Println(e)
+	}
+
 }
 
 func addPhoto(f string, repoID uuid.UUID, wg *sync.WaitGroup, throttle chan int) {
@@ -499,6 +566,234 @@ func dry(filenames []string) {
 
 		log.Printf("New: %s %s\n", dir, filename)
 	}
+
+}
+
+func addPhotosUsingMap(p string, wg *sync.WaitGroup, throttle chan int, photoMap *map[string]Photo) {
+	defer wg.Done()
+	var tm time.Time
+	// hydrate existing repo
+
+	// Add photos
+
+	filename := filepath.Base(p)
+	// dir := filepath.Base(filepath.Dir(p))
+
+	// Check if path already exists in the database
+	// conn := DbConnect()
+
+	// dirFilenameExists := CheckIfDirFilenameExists(conn, filename, dir)
+
+	// conn.Close()
+
+	// if dirFilenameExists {
+	// 	fmt.Print(".")
+	// 	continue
+	// }
+
+	ext := strings.ToLower(filepath.Ext(p))
+
+	// Exclude extensions
+
+	if ext == ".json" {
+		<-throttle
+		return
+	}
+
+	if ext == ".ini" {
+		<-throttle
+		return
+	}
+
+	if ext == ".db" {
+		<-throttle
+		return
+	}
+
+	if ext == ".url" {
+		<-throttle
+		return
+	}
+
+	if ext == ".rss" {
+		<-throttle
+		return
+	}
+
+	if ext == ".ofa" {
+		<-throttle
+		return
+	}
+
+	// Exclude filenames
+
+	if filename == ".DS_Store" {
+		<-throttle
+		return
+	}
+
+	if filename == ".BridgeSort" {
+		<-throttle
+		return
+	}
+
+	// Stat checks
+
+	info, err := os.Stat(p)
+	if os.IsNotExist(err) {
+		log.Fatal("File does not exist.")
+	}
+
+	if info.IsDir() {
+		<-throttle
+		return
+	}
+
+	if strings.Contains(p, "-edited") {
+		<-throttle
+		return
+	}
+
+	// Open file, detect content type and read exif
+
+	file, err := os.Open(p)
+	if err != nil {
+		log.Printf("An error ocurred while trying to open: %s\n", p)
+		log.Println(err)
+	}
+
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	file.Close()
+
+	contentType := http.DetectContentType(content)
+	exif.RegisterParsers(mknote.All...)
+	exifData, err := exif.Decode(bytes.NewReader(content))
+
+	// Handle movie files and set date taken timestamp
+
+	if err != nil {
+		if contentType == "video/avi" {
+
+			tm, _ = time.Parse("2006-01-02", "1971-08-11")
+
+		} else if contentType == "application/octet-stream" && ext == ".mov" {
+
+			tm, _ = time.Parse("2006-01-02", "1971-01-19")
+
+		} else if contentType == "application/octet-stream" && ext == ".mp4" {
+
+			tm, _ = time.Parse("2006-01-02", "1971-07-30")
+
+		} else if contentType == "video/mp4" && ext == ".mp4" {
+
+			tm, _ = time.Parse("2006-01-02", "1971-07-30")
+
+		} else if contentType == "image/jpeg" {
+
+			tm, _ = time.Parse("2006-01-02", "1971-09-19")
+
+		} else if contentType == "image/png" {
+
+			tm, _ = time.Parse("2006-01-02", "1971-09-17")
+
+		} else {
+			fmt.Print("x")
+			<-throttle
+			return
+		}
+	} else {
+
+		tm, _ = exifData.DateTime()
+
+	}
+
+	// Generate sha and filename
+
+	sha := hashContent(content)
+
+	currentPath, err := os.Getwd()
+	if err != nil {
+		log.Println(err)
+	}
+
+	// camMake, _ := x.Get(exif.Make)
+	// fmt.Println(camMake.StringVal())
+
+	// camModel, _ := x.Get(exif.Model) // normally, don't ignore errors!
+	// fmt.Println(camModel.StringVal())
+	// tm, _ := exifData.DateTime()
+	newPath := buildContentPath(tm, currentPath)
+	newFilename := generateFileName(filename, sha)
+	newPhotoPath := filepath.Join(newPath, newFilename)
+
+	photo := Photo{
+		ShaHash:    sha,
+		SourcePath: p,
+		Path:       newPhotoPath,
+		DateTaken:  tm,
+	}
+
+	_, exists := (*photoMap)[photo.ShaHash]
+	if exists {
+		fmt.Print("*")
+		<-throttle
+		return
+	}
+
+	// Create new path for photo is it doesn't already exist
+	err = os.MkdirAll(newPath, 0755)
+	if err != nil {
+		panic(err)
+	}
+
+	// Write content to repo
+	err = ioutil.WriteFile(newPhotoPath, content, 0755)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Generate thumbnail
+
+	// if contentType == "video/avi" {
+
+	// 	// TODO: Add thumbnail generator for avi
+
+	// 	log.Printf("No thumbnail generated for  %s", path)
+
+	// } else if contentType == "application/octet-stream" && extension == ".mov" {
+
+	// 	// TODO: Add thumbnail generator for mov
+
+	// 	log.Printf("No thumbnail generated for  %s", path)
+
+	// } else if extension == ".thm" {
+
+	// 	// .thm extension is an old sony ericsson phone extension
+
+	// 	log.Printf("No thumbnail generated for %s", path)
+
+	// } else {
+
+	// 	thumbFilename := fmt.Sprintf("%s/.loupebox/cache/%s.jpeg", currentPath, sha)
+	// 	cmd := exec.Command("darktable-cli", path, thumbFilename, "--height", "300")
+	// 	cmd.Stdout = os.Stdout
+	// 	cmd.Stderr = os.Stderr
+	// 	err = cmd.Run()
+	// 	if err != nil {
+	// 		log.Fatalf("cmd.Run() failed with %s\n", err)
+	// 	}
+
+	// }
+	fmt.Print("\n")
+	log.Printf("Copied %s to %s\n", p, newPhotoPath)
+
+	// Add to maps
+	(*photoMap)[photo.ShaHash] = photo
+	<-throttle
 
 }
 
