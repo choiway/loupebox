@@ -1,35 +1,39 @@
 # LoupeBox
 
-# Dependencies
+Loupe Box helps you manage the importing and consolidation of photos by importing your photos into a Loupe Box respository into a date based folder structure while avoiding duplicate imports.
 
-## Postgres
+## Install LoupeBox
 
-```
-sudo su postgres
-psql
-CREATE DATABASE loupebox;
-```
-
-You'll also need to expore the database url in your config:
+Use `go install` to build `loupebox` and add it to your `go` path. You'll need `go` installed as a prerequisite. 
 
 ```
-export DATABASE_URL=postgres://postgres:postgres@localhost:5432/loupebox
-
+git clone git@github.com:choiway/loupebox.git
+cd loupebox
+go install
 ```
 
-## Darktable
 
-Loupebox uses Darktable to generate thumbnails. To install Darktable on Ubuntu run
+## Your First Repo
+
+Create your directory
 
 ```
-sudo apt-get install darktable
+mkdir My_Cool_Photos
 ```
-
-## Quick Start
 
 Initialize new collection
 
 ```
+cd My_Cool_Photos
 loupebox init
+```
+
+Add an external repo
+
+[note] Make sure you're in your repo
+
+```
+loupebox add /media/ext_drive/my/cool/photos
+
 ```
 
