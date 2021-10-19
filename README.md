@@ -34,6 +34,5 @@ Add an external repo
 
 ```
 loupebox add /media/ext_drive/my/cool/photos
-
 ```
 
