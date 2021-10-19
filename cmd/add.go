@@ -17,7 +17,6 @@ package cmd
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
 	"encoding/csv"
 	"fmt"
@@ -26,15 +25,13 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/rwcarlsen/goexif/exif"
 	"github.com/rwcarlsen/goexif/mknote"
 	"github.com/spf13/cobra"
@@ -75,7 +72,7 @@ in the source directory.
 
 		if dryrun {
 
-			log.Println("Doing dry run")
+			log.Println("Starting dry run")
 
 			dry(filenames)
 
@@ -98,31 +95,11 @@ in the source directory.
 				log.Fatal(err)
 			}
 
-			// Log current import
-
-			// conn := DbConnect()
-
-			// lastInsertedId, err := InsertImport(conn, path, config.Repo.ID)
-			// if err != nil {
-			// 	log.Fatal(err)
-			// }
-
-			// conn.Close()
-
 			// Add photos
 
 			log.Printf("Adding photos from %s\n", path)
 
-			// addfiles(filenames, config.Repo.ID)
 			addfilesWithHash(filenames)
-
-			// Update repo with completed status
-
-			// conn = DbConnect()
-
-			// UpdateImportWithCompleteStatus(conn, lastInsertedId)
-
-			// conn.Close()
 
 			fmt.Print("\n")
 			log.Printf("Finished adding %s", path)
@@ -167,23 +144,13 @@ func walkdirectory(path string) ([]string, error) {
 	return paths, nil
 }
 
-// addfiles uses sync.WaitGroup to create multiple import jobs
-func addfiles(filenames []string, repoID uuid.UUID) {
+func addfilesWithHash(filenames []string) {
 
-	throttle := make(chan int, 4)
-	var wg sync.WaitGroup
-
-	for _, f := range filenames {
-		throttle <- 1 // whatever number
-		wg.Add(1)
-		go addPhoto(f, repoID, &wg, throttle)
+	photoMap := PhotoMap{
+		photos: map[string]Photo{},
 	}
 
-	wg.Wait()
-}
-
-func addfilesWithHash(filenames []string) {
-	photoMap := make(map[string]Photo)
+	// Hydrate photomap from existing photos cache
 
 	csvFile, err := os.Open(".loupebox/cache/photos")
 	if err != nil {
@@ -193,7 +160,7 @@ func addfilesWithHash(filenames []string) {
 
 	csvReader := csv.NewReader(csvFile)
 
-	rows, err := csvReader.ReadAll() // `rows` is of type [][]string
+	rows, err := csvReader.ReadAll()
 	if err != nil {
 		panic(err)
 	}
@@ -209,12 +176,13 @@ func addfilesWithHash(filenames []string) {
 			DateTaken:  t,
 		}
 
-		photoMap[p.ShaHash] = p
+		photoMap.Insert(p)
 	}
 
-	// Start processing
-
-	throttle := make(chan int, 1)
+	// Start processing photos
+	// Sets the number os workers to the number of cpus.
+	// TODO: Consider whether this should be passed in as a flag
+	throttle := make(chan int, runtime.NumCPU())
 	var wg sync.WaitGroup
 
 	for _, f := range filenames {
@@ -228,7 +196,7 @@ func addfilesWithHash(filenames []string) {
 	// Persists photomap to disk
 
 	var pps [][]string
-	for _, p := range photoMap {
+	for _, p := range photoMap.photos {
 		t := p.DateTaken.Format("2006-02-01")
 		pps = append(pps, []string{p.ShaHash, p.SourcePath, p.Path, t})
 	}
@@ -247,273 +215,58 @@ func addfilesWithHash(filenames []string) {
 
 }
 
-func addPhoto(f string, repoID uuid.UUID, wg *sync.WaitGroup, throttle chan int) {
-	defer wg.Done() // Need this here clean up once the wait group close
+func dry(filenames []string) {
+	photos := make(map[string]Photo)
 
-	var tm time.Time
+	// Hydrate photos hash map from photos cache
 
-	// Check if path already exists in the database
-
-	conn := DbConnect()
-
-	pathExists := CheckIfPathExists(conn, f)
-
-	conn.Close()
-
-	if pathExists {
-		fmt.Print(".")
-		<-throttle
-		return
-	}
-
-	// Check if directory and file name exists
-	// This checks for the intance when the source repo path might be different but the
-	// local directory and photo name are the same as one that was already imported
-
-	extension := strings.ToLower(filepath.Ext(f))
-	filename := filepath.Base(f)
-	dir := filepath.Base(filepath.Dir(f))
-
-	conn = DbConnect()
-
-	dirFilenameExists := CheckIfDirFilenameExists(conn, filename, dir)
-
-	conn.Close()
-
-	if dirFilenameExists {
-		fmt.Print(".")
-		<-throttle
-		return
-	}
-
-	// Skips extensions with json
-
-	ext := strings.ToLower(filepath.Ext(f))
-
-	if ext == ".json" {
-		<-throttle
-		return
-	}
-
-	// Checks is path is s directory
-	// Skip to next path if it is a direcotry
-
-	info, err := os.Stat(f)
-	if os.IsNotExist(err) {
-		// This throws an error is the source path doesn't exist
-		log.Fatal("File does not exist.")
-	}
-
-	if info.IsDir() {
-		<-throttle
-		return
-	}
-
-	// Skip files that includes the suffix -edited in its filename
-	// Handles edited files and duplicates from google photos
-	// Sha won't catch thes files as different
-
-	if strings.Contains(f, "-edited") {
-		<-throttle
-		return
-	}
-
-	// Open file, detect content type and read exif
-
-	file, err := os.Open(f)
+	csvFile, err := os.Open(".loupebox/cache/photos")
 	if err != nil {
-		log.Printf("An error ocurred while trying to open: %s\n", f)
-		log.Println(err)
+		panic(err)
 	}
+	defer csvFile.Close()
 
-	content, err := ioutil.ReadAll(file)
-	if err != nil {
-		fmt.Println(err)
-	}
+	csvReader := csv.NewReader(csvFile)
 
-	file.Close()
-
-	contentType := http.DetectContentType(content)
-	exif.RegisterParsers(mknote.All...)
-	exifData, err := exif.Decode(bytes.NewReader(content))
-
-	// Handle movie files and set date taken timestamp
-
-	if err != nil {
-		if contentType == "video/avi" {
-
-			tm, _ = time.Parse("2006-01-02", "1971-08-11")
-
-		} else if contentType == "application/octet-stream" && extension == ".mov" {
-
-			tm, _ = time.Parse("2006-01-02", "1971-01-19")
-
-		} else if contentType == "application/octet-stream" && extension == ".mp4" {
-
-			tm, _ = time.Parse("2006-01-02", "1971-07-30")
-
-		} else if contentType == "video/mp4" && extension == ".mp4" {
-
-			tm, _ = time.Parse("2006-01-02", "1971-07-30")
-
-		} else if contentType == "image/jpeg" {
-
-			tm, _ = time.Parse("2006-01-02", "1971-09-19")
-
-		} else if contentType == "image/png" {
-
-			tm, _ = time.Parse("2006-01-02", "1971-09-17")
-
-		} else {
-			fmt.Print("x")
-			<-throttle
-			return
-		}
-	} else {
-
-		tm, _ = exifData.DateTime()
-
-	}
-
-	// Generate sha and filename
-
-	sha := hashContent(content)
-
-	currentPath, err := os.Getwd()
-	if err != nil {
-		log.Println(err)
-	}
-
-	// camMake, _ := x.Get(exif.Make)
-	// fmt.Println(camMake.StringVal())
-
-	// camModel, _ := x.Get(exif.Model) // normally, don't ignore errors!
-	// fmt.Println(camModel.StringVal())
-	// tm, _ := exifData.DateTime()
-	newPath := buildContentPath(tm, currentPath)
-	newFilename := generateFileName(filename, sha)
-	newPhotoPath := filepath.Join(newPath, newFilename)
-
-	photo := Photo{
-		ShaHash:    sha,
-		RepoID:     repoID,
-		SourcePath: f,
-		Path:       newPhotoPath,
-		DateTaken:  tm,
-	}
-
-	// Check if photo already exists in database
-	// Here we check by the sha hash
-	conn = DbConnect()
-
-	photoExists := CheckIfPhotoExists(conn, photo)
-
-	conn.Close()
-
-	// Add photo to repo
-
-	if photoExists {
-		fmt.Print("\n")
-		log.Println("Photo already exists, skipping copy")
-
-		conn = DbConnect()
-
-		sourcePathExists := CheckShaAndSourceRepo(conn, photo)
-
-		conn.Close()
-
-		if sourcePathExists {
-			log.Println("Source path already exists in database, skipping...")
-			<-throttle
-			return
-		}
-
-		log.Println("Logging new source path")
-
-		photo.Status = "skipped"
-		photo.Path = ""
-
-		insertPhotoIntoDb(photo)
-
-		<-throttle
-		return
-	}
-
-	// Create new directory
-
-	err = os.MkdirAll(newPath, 0755)
+	rows, err := csvReader.ReadAll()
 	if err != nil {
 		panic(err)
 	}
 
-	// Write content to repo
+	for _, row := range rows {
 
-	err = ioutil.WriteFile(newPhotoPath, content, 0755)
-	if err != nil {
-		log.Fatal(err)
+		t, _ := time.Parse("2006-01-02", row[3])
+
+		p := Photo{
+			ShaHash:    row[0],
+			SourcePath: row[1],
+			Path:       row[2],
+			DateTaken:  t,
+		}
+
+		truncatedPath := TruncatePath(p.SourcePath)
+
+		photos[truncatedPath] = p
 	}
 
-	// Generate thumbnail
-
-	// if contentType == "video/avi" {
-
-	// 	// TODO: Add thumbnail generator for avi
-
-	// 	log.Printf("No thumbnail generated for  %s", path)
-
-	// } else if contentType == "application/octet-stream" && extension == ".mov" {
-
-	// 	// TODO: Add thumbnail generator for mov
-
-	// 	log.Printf("No thumbnail generated for  %s", path)
-
-	// } else if extension == ".thm" {
-
-	// 	// .thm extension is an old sony ericsson phone extension
-
-	// 	log.Printf("No thumbnail generated for %s", path)
-
-	// } else {
-
-	// 	thumbFilename := fmt.Sprintf("%s/.loupebox/cache/%s.jpeg", currentPath, sha)
-	// 	cmd := exec.Command("darktable-cli", path, thumbFilename, "--height", "300")
-	// 	cmd.Stdout = os.Stdout
-	// 	cmd.Stderr = os.Stderr
-	// 	err = cmd.Run()
-	// 	if err != nil {
-	// 		log.Fatalf("cmd.Run() failed with %s\n", err)
-	// 	}
-
-	// }
-	fmt.Print("\n")
-	log.Printf("Copied %s to %s\n", f, newPhotoPath)
-
-	// Add to database
-
-	insertPhotoIntoDb(photo)
-	<-throttle
-}
-
-func dry(filenames []string) {
 	for _, p := range filenames {
+
 		filename := filepath.Base(p)
 		dir := filepath.Base(filepath.Dir(p))
 
-		// Check if path already exists in the database
-		conn := DbConnect()
-
-		dirFilenameExists := CheckIfDirFilenameExists(conn, filename, dir)
-
-		conn.Close()
-
-		if dirFilenameExists {
-			fmt.Print(".")
+		// Check is directory and path have already been imported
+		// TODO: Currently this doesn't catch a file that may have been added from a different
+		// source path since we don't keep track of the source of duplicates and only add the first
+		// photo entered into the hash map.
+		// Consider creating another map with the truncated directory as the index
+		// Have think through whethere it's worth the additional space and complexity
+		_, exists := photos[TruncatePath(p)]
+		if exists {
 			continue
 		}
 
-		ext := strings.ToLower(filepath.Ext(p))
-
 		// Exclude extensions
+		ext := strings.ToLower(filepath.Ext(p))
 
 		if ext == ".json" {
 			continue
@@ -569,28 +322,21 @@ func dry(filenames []string) {
 
 }
 
-func addPhotosUsingMap(p string, wg *sync.WaitGroup, throttle chan int, photoMap *map[string]Photo) {
-	defer wg.Done()
-	var tm time.Time
-	// hydrate existing repo
+// TruncatePath takes a full path and returns the most filename and one directory above
+// For example, if you pass in /home/monkey/stash/banana/peel.txt this function will return
+// /banana/peel.txt
+func TruncatePath(path string) string {
+	filename := filepath.Base(path)
+	dir := filepath.Base(filepath.Dir(path))
+	return filepath.Join(dir, filename)
+}
 
-	// Add photos
+func addPhotosUsingMap(p string, wg *sync.WaitGroup, throttle chan int, photoMap *PhotoMap) {
+	defer wg.Done()
+
+	var tm time.Time
 
 	filename := filepath.Base(p)
-	// dir := filepath.Base(filepath.Dir(p))
-
-	// Check if path already exists in the database
-	// conn := DbConnect()
-
-	// dirFilenameExists := CheckIfDirFilenameExists(conn, filename, dir)
-
-	// conn.Close()
-
-	// if dirFilenameExists {
-	// 	fmt.Print(".")
-	// 	continue
-	// }
-
 	ext := strings.ToLower(filepath.Ext(p))
 
 	// Exclude extensions
@@ -625,7 +371,7 @@ func addPhotosUsingMap(p string, wg *sync.WaitGroup, throttle chan int, photoMap
 		return
 	}
 
-	// Exclude filenames
+	// Exclude certain files
 
 	if filename == ".DS_Store" {
 		<-throttle
@@ -674,7 +420,8 @@ func addPhotosUsingMap(p string, wg *sync.WaitGroup, throttle chan int, photoMap
 	exifData, err := exif.Decode(bytes.NewReader(content))
 
 	// Handle movie files and set date taken timestamp
-
+	// We hard a code a datetaken date for the movie files since Exif doesn't read it
+	// The date are hardcoded by the movie type. TODO: Figure out how to read date taken from movie files
 	if err != nil {
 		if contentType == "video/avi" {
 
@@ -701,7 +448,9 @@ func addPhotosUsingMap(p string, wg *sync.WaitGroup, throttle chan int, photoMap
 			tm, _ = time.Parse("2006-01-02", "1971-09-17")
 
 		} else {
+
 			fmt.Print("x")
+
 			<-throttle
 			return
 		}
@@ -720,12 +469,7 @@ func addPhotosUsingMap(p string, wg *sync.WaitGroup, throttle chan int, photoMap
 		log.Println(err)
 	}
 
-	// camMake, _ := x.Get(exif.Make)
-	// fmt.Println(camMake.StringVal())
-
-	// camModel, _ := x.Get(exif.Model) // normally, don't ignore errors!
-	// fmt.Println(camModel.StringVal())
-	// tm, _ := exifData.DateTime()
+	// Create new path and filename
 	newPath := buildContentPath(tm, currentPath)
 	newFilename := generateFileName(filename, sha)
 	newPhotoPath := filepath.Join(newPath, newFilename)
@@ -737,7 +481,7 @@ func addPhotosUsingMap(p string, wg *sync.WaitGroup, throttle chan int, photoMap
 		DateTaken:  tm,
 	}
 
-	_, exists := (*photoMap)[photo.ShaHash]
+	_, exists := photoMap.Get(photo.ShaHash)
 	if exists {
 		fmt.Print("*")
 		<-throttle
@@ -756,43 +500,11 @@ func addPhotosUsingMap(p string, wg *sync.WaitGroup, throttle chan int, photoMap
 		log.Fatal(err)
 	}
 
-	// Generate thumbnail
-
-	// if contentType == "video/avi" {
-
-	// 	// TODO: Add thumbnail generator for avi
-
-	// 	log.Printf("No thumbnail generated for  %s", path)
-
-	// } else if contentType == "application/octet-stream" && extension == ".mov" {
-
-	// 	// TODO: Add thumbnail generator for mov
-
-	// 	log.Printf("No thumbnail generated for  %s", path)
-
-	// } else if extension == ".thm" {
-
-	// 	// .thm extension is an old sony ericsson phone extension
-
-	// 	log.Printf("No thumbnail generated for %s", path)
-
-	// } else {
-
-	// 	thumbFilename := fmt.Sprintf("%s/.loupebox/cache/%s.jpeg", currentPath, sha)
-	// 	cmd := exec.Command("darktable-cli", path, thumbFilename, "--height", "300")
-	// 	cmd.Stdout = os.Stdout
-	// 	cmd.Stderr = os.Stderr
-	// 	err = cmd.Run()
-	// 	if err != nil {
-	// 		log.Fatalf("cmd.Run() failed with %s\n", err)
-	// 	}
-
-	// }
 	fmt.Print("\n")
 	log.Printf("Copied %s to %s\n", p, newPhotoPath)
 
-	// Add to maps
-	(*photoMap)[photo.ShaHash] = photo
+	// Add photo to photoMap
+	photoMap.Insert(photo)
 	<-throttle
 
 }
@@ -808,6 +520,9 @@ func hashContent(content []byte) string {
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
+// buildContentPath generates a path from the time data
+// The path is generated by the year, month, day where if the day is
+// 2004-01-02, the path will be 2004/01/02 in the working directory
 func buildContentPath(tm time.Time, workingDir string) string {
 	year := strconv.Itoa(tm.Year())
 	month := doubleDigitMonth(tm.Month())
@@ -834,87 +549,6 @@ func doubleDigitDay(day int) string {
 	return strconv.Itoa(day)
 }
 
-func CheckIfPathExists(conn *pgxpool.Pool, path string) bool {
-	sql := `SELECT EXISTS (SELECT 1 FROM photos WHERE source_path = $1);`
-
-	var exists bool
-
-	err := conn.QueryRow(context.Background(), sql, path).Scan(&exists)
-	// fmt.Printf("row: %#v\n", row.Scan())
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	return exists
-}
-
-func CheckIfPhotoExists(conn *pgxpool.Pool, photo Photo) bool {
-	sql := `SELECT EXISTS (SELECT 1 FROM photos where sha_hash = $1);`
-
-	var exists bool
-
-	err := conn.QueryRow(context.Background(), sql, photo.ShaHash).Scan(&exists)
-	if err != nil {
-		panic(err)
-	}
-
-	return exists
-}
-
-func CheckIfDirFilenameExists(conn *pgxpool.Pool, filename string, dir string) bool {
-	sql := `SELECT EXISTS (SELECT 1 FROM photos WHERE dir = $1 AND source_filename = $2);`
-
-	var exists bool
-
-	err := conn.QueryRow(context.Background(), sql, dir, filename).Scan(&exists)
-	if err != nil {
-		panic(err)
-	}
-
-	return exists
-}
-
-func CheckShaAndSourceRepo(conn *pgxpool.Pool, photo Photo) bool {
-	sql := `SELECT EXISTS (SELECT 1 FROM photos WHERE sha_hash = $1 AND source_path = $2);`
-
-	var exists bool
-
-	err := conn.QueryRow(context.Background(), sql, photo.ShaHash, photo.SourcePath).Scan(&exists)
-	if err != nil {
-		panic(err)
-	}
-
-	return exists
-}
-
-func InsertPhoto(conn *pgxpool.Pool, p Photo) error {
-	ogFilename := path.Base(p.SourcePath)
-	ogDir := path.Base(path.Dir(p.SourcePath))
-
-	sql := `
-	INSERT INTO photos(
-		inserted_at,
-		updated_at, 
-		repo_id, 
-		sha_hash,
-		source_path,
-		path,
-		dir,
-		source_filename,
-		date_taken,
-		status
-	) values(now(), now(), $1, $2, $3, $4, $5, $6, $7, $8)
-	`
-	_, err := conn.Exec(context.Background(), sql, p.RepoID, p.ShaHash, p.SourcePath, p.Path, ogDir, ogFilename, p.DateTaken, p.Status)
-	if err != nil {
-		return err
-	}
-
-	log.Printf("Successfully inserted photo record: %s\n", p.SourcePath)
-
-	return nil
-}
-
 func generateFileName(filename string, sha string) string {
 
 	ext := filepath.Ext(filename)
@@ -922,67 +556,4 @@ func generateFileName(filename string, sha string) string {
 	shortSha := sha[0:6]
 
 	return fmt.Sprintf("%s_%s%s", n, shortSha, ext)
-}
-
-func insertPhotoIntoDb(photo Photo) {
-	pool := DbConnect()
-
-	err := InsertPhoto(pool, photo)
-	if err != nil {
-		panic(err)
-	}
-
-	pool.Close()
-}
-
-func InsertImport(conn *pgxpool.Pool, path string, loupeboxID uuid.UUID) (int64, error) {
-	s := `
-	INSERT INTO imports(
-		inserted_at,
-		updated_at,
-		repo_id, 
-		path,
-		status
-	) values(now(), now(), $1, $2, 'started')
-	RETURNING id
-	`
-	var lastInsertID int64
-
-	err := conn.QueryRow(context.Background(), s, loupeboxID, path).Scan(&lastInsertID)
-	if err != nil {
-		return 0, err
-	}
-
-	log.Println("Successfully inserted import event")
-
-	return lastInsertID, nil
-}
-
-func CheckIfImportExists(conn *pgxpool.Pool, path string, loupeboxID uuid.UUID) bool {
-	sql := `SELECT EXISTS (SELECT 1 FROM imports WHERE path = $1);`
-
-	var exists int
-
-	err := conn.QueryRow(context.Background(), sql, path).Scan(&exists)
-	if err != nil {
-		panic(err)
-	}
-
-	if exists == 1 {
-		return true
-	}
-
-	return false
-}
-
-func UpdateImportWithCompleteStatus(conn *pgxpool.Pool, id int64) {
-	s := `UPDATE imports 
-		SET status = $1, 
-			updated_at = now()
-		WHERE id = $2`
-
-	_, err := conn.Exec(context.Background(), s, "completed", id)
-	if err != nil {
-		log.Fatal(err)
-	}
 }

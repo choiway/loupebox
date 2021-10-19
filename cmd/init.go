@@ -17,14 +17,12 @@ package cmd
 
 import (
 	"bufio"
-	"context"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v4/pgxpool"
 	_ "github.com/mattn/go-sqlite3" // Import go-sqlite3 library
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -34,12 +32,7 @@ import (
 var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initializes loupebox for the current directory",
-	Long: `A longer description that spans multiple lines and likely contains examples
-and usage of using your command. For example:
-
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
+	Long:  `Initializes the curre directory by creating a looupebox directory and cache.`,
 	Run: func(cmd *cobra.Command, args []string) {
 
 		currentpath, err := os.Getwd()
@@ -48,27 +41,32 @@ to quickly create a Cobra application.`,
 		}
 		fmt.Printf("Working directory: %s\n", currentpath)
 
-		// Sqlite init
+		// Initialize loupebox directory
+
 		_, err = os.Stat(".loupebox")
+
 		if os.IsNotExist(err) {
 
 			initializeLoupebox()
-			// createTables()
+
 		} else {
 
 			scanner := bufio.NewScanner(os.Stdin)
 
 			fmt.Print(`Loupebox has already been initialized in this foler. Do you want to erase
-		the existing info and reinitialize Loupebox? [Y/n]:`)
+the existing info and reinitialize Loupebox? [Y/n]:`)
 			scanner.Scan()
-			text := scanner.Text()
+			userInput := scanner.Text()
 
-			if text == "Y" {
+			if userInput == "Y" {
+
 				fmt.Println("Reinitializing...")
 				initializeLoupebox()
-				// createTables()
+
 			} else {
+
 				fmt.Println("Aborting initialization")
+
 			}
 		}
 
@@ -98,9 +96,9 @@ type Repo struct {
 }
 
 func initializeLoupebox() {
+
 	// Remove existing .loupebox directory
 
-	// TODO: should add check if .loupebox already exists
 	err := os.RemoveAll(".loupebox")
 	if err != nil {
 		log.Fatal(err)
@@ -131,18 +129,17 @@ func initializeLoupebox() {
 	data, err := yaml.Marshal(&config)
 
 	if err != nil {
-
 		log.Fatal(err)
 	}
 
 	err = ioutil.WriteFile(".loupebox/config.yaml", data, 0755)
 
 	if err != nil {
-
 		log.Fatal(err)
 	}
 
-	// Touch empty file to photos cache
+	// Touch empty file to photos
+	// We write the added photos to this file
 
 	err = ioutil.WriteFile(".loupebox/cache/photos", []byte(""), 0755)
 
@@ -152,58 +149,4 @@ func initializeLoupebox() {
 
 	log.Println("Created config file")
 
-}
-
-func createTables() {
-	pool := DbConnect()
-	defer pool.Close()
-
-	pqCreatePhotosTable(pool)
-	pgCreateImportsTable(pool)
-}
-
-func pqCreatePhotosTable(conn *pgxpool.Pool) {
-	sql := `CREATE TABLE photos (
-		id SERIAL PRIMARY KEY,		
-		inserted_at TIMESTAMP,
-		updated_at TIMESTAMP,
-		repo_id UUID,
-		sha_hash TEXT,
-		source_path TEXT,
-		path TEXT,
-		dir TEXT,
-		source_filename TEXT,
-		date_taken TIMESTAMP,
-		status TEXT
-	  );`
-
-	log.Println("Creating photos table...")
-
-	_, err := conn.Exec(context.Background(), sql)
-	if err != nil {
-		log.Fatal(err.Error())
-	}
-
-	log.Println("photos table created")
-}
-
-func pgCreateImportsTable(conn *pgxpool.Pool) {
-
-	sql := `CREATE TABLE imports (
-		id SERIAL PRIMARY KEY,		
-		inserted_at TIMESTAMP,
-		updated_at TIMESTAMP,
-		repo_id UUID,
-		path TEXT,
-		status TEXT
-	  );`
-
-	log.Println("Creating imports table...")
-
-	_, err := conn.Exec(context.Background(), sql)
-	if err != nil {
-		log.Fatal(err.Error())
-	}
-
-	log.Println("Created import table")
 }
