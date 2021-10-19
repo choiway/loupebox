@@ -76,6 +76,8 @@ in the source directory.
 
 			dry(filenames)
 
+			log.Println("Dry run complete!")
+
 		} else {
 
 			// Add current repo to repo database
@@ -146,8 +148,14 @@ func walkdirectory(path string) ([]string, error) {
 
 func addfilesWithHash(filenames []string) {
 
-	photoMap := PhotoMap{
-		photos: map[string]Photo{},
+	photos := []Photo{}
+
+	shaMap := Set{
+		set: map[string]bool{},
+	}
+
+	dirMap := Set{
+		set: map[string]bool{},
 	}
 
 	// Hydrate photomap from existing photos cache
@@ -176,7 +184,9 @@ func addfilesWithHash(filenames []string) {
 			DateTaken:  t,
 		}
 
-		photoMap.Insert(p)
+		photos = append(photos, p)
+		shaMap.Insert(p.ShaHash)
+		dirMap.Insert(TruncatePath(p.SourcePath))
 	}
 
 	// Start processing photos
@@ -188,7 +198,7 @@ func addfilesWithHash(filenames []string) {
 	for _, f := range filenames {
 		throttle <- 1 // whatever number
 		wg.Add(1)
-		go addPhotosUsingMap(f, &wg, throttle, &photoMap)
+		go addPhotosUsingMap(f, &wg, throttle, &shaMap, &dirMap, &photos)
 	}
 
 	wg.Wait()
@@ -196,7 +206,7 @@ func addfilesWithHash(filenames []string) {
 	// Persists photomap to disk
 
 	var pps [][]string
-	for _, p := range photoMap.photos {
+	for _, p := range photos {
 		t := p.DateTaken.Format("2006-02-01")
 		pps = append(pps, []string{p.ShaHash, p.SourcePath, p.Path, t})
 	}
@@ -331,7 +341,7 @@ func TruncatePath(path string) string {
 	return filepath.Join(dir, filename)
 }
 
-func addPhotosUsingMap(p string, wg *sync.WaitGroup, throttle chan int, photoMap *PhotoMap) {
+func addPhotosUsingMap(p string, wg *sync.WaitGroup, throttle chan int, shaMap *Set, dirMap *Set, photos *[]Photo) {
 	defer wg.Done()
 
 	var tm time.Time
@@ -427,15 +437,11 @@ func addPhotosUsingMap(p string, wg *sync.WaitGroup, throttle chan int, photoMap
 
 			tm, _ = time.Parse("2006-01-02", "1971-08-11")
 
-		} else if contentType == "application/octet-stream" && ext == ".mov" {
+		} else if ext == ".mov" {
 
 			tm, _ = time.Parse("2006-01-02", "1971-01-19")
 
-		} else if contentType == "application/octet-stream" && ext == ".mp4" {
-
-			tm, _ = time.Parse("2006-01-02", "1971-07-30")
-
-		} else if contentType == "video/mp4" && ext == ".mp4" {
+		} else if ext == ".mp4" {
 
 			tm, _ = time.Parse("2006-01-02", "1971-07-30")
 
@@ -449,7 +455,10 @@ func addPhotosUsingMap(p string, wg *sync.WaitGroup, throttle chan int, photoMap
 
 		} else {
 
-			fmt.Print("x")
+			fmt.Print("\nx\n")
+			fmt.Println(p)
+			fmt.Println(contentType)
+			fmt.Println(ext)
 
 			<-throttle
 			return
@@ -481,9 +490,16 @@ func addPhotosUsingMap(p string, wg *sync.WaitGroup, throttle chan int, photoMap
 		DateTaken:  tm,
 	}
 
-	_, exists := photoMap.Get(photo.ShaHash)
+	exists := shaMap.Check(photo.ShaHash)
 	if exists {
+
+		dirExists := dirMap.Check(TruncatePath(photo.SourcePath))
+		if !dirExists {
+			(*photos) = append((*photos), photo)
+		}
+
 		fmt.Print("*")
+
 		<-throttle
 		return
 	}
@@ -504,7 +520,8 @@ func addPhotosUsingMap(p string, wg *sync.WaitGroup, throttle chan int, photoMap
 	log.Printf("Copied %s to %s\n", p, newPhotoPath)
 
 	// Add photo to photoMap
-	photoMap.Insert(photo)
+	shaMap.Insert(photo.ShaHash)
+	(*photos) = append((*photos), photo)
 	<-throttle
 
 }
