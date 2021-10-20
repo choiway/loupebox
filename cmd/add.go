@@ -381,6 +381,11 @@ func addPhotosUsingMap(p string, wg *sync.WaitGroup, throttle chan int, shaMap *
 		return
 	}
 
+	if ext == ".tif" {
+		<-throttle
+		return
+	}
+
 	// Exclude certain files
 
 	if filename == ".DS_Store" {
@@ -432,13 +437,12 @@ func addPhotosUsingMap(p string, wg *sync.WaitGroup, throttle chan int, shaMap *
 	// Handle movie files and set date taken timestamp
 	// We hard a code a datetaken date for the movie files since Exif doesn't read it
 	// The date are hardcoded by the movie type. TODO: Figure out how to read date taken from movie files
-	if err != nil {
+	if err != nil && exifData == nil {
 		if contentType == "video/avi" {
 
 			tm, _ = time.Parse("2006-01-02", "1971-08-11")
 
 		} else if ext == ".mov" {
-
 			tm, _ = time.Parse("2006-01-02", "1971-01-19")
 
 		} else if ext == ".mp4" {
@@ -459,6 +463,7 @@ func addPhotosUsingMap(p string, wg *sync.WaitGroup, throttle chan int, shaMap *
 			fmt.Println(p)
 			fmt.Println(contentType)
 			fmt.Println(ext)
+			fmt.Println(err)
 
 			<-throttle
 			return
