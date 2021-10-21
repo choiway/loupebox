@@ -100,6 +100,7 @@ in the source directory.
 			// Add photos
 
 			log.Printf("Adding photos from %s\n", path)
+			fmt.Print("\n\n\n\033[3A")
 
 			addfilesWithHash(filenames)
 
@@ -148,6 +149,8 @@ func walkdirectory(path string) ([]string, error) {
 
 func addfilesWithHash(filenames []string) {
 
+	totalFileNames := len(filenames)
+
 	photos := []Photo{}
 
 	shaMap := Set{
@@ -195,10 +198,11 @@ func addfilesWithHash(filenames []string) {
 	throttle := make(chan int, runtime.NumCPU())
 	var wg sync.WaitGroup
 
-	for _, f := range filenames {
+	for i, f := range filenames {
 		throttle <- 1 // whatever number
 		wg.Add(1)
-		go addPhotosUsingMap(f, &wg, throttle, &shaMap, &dirMap, &photos)
+		go addPhotosUsingMap(f, &wg, throttle, &shaMap, &dirMap, &photos, i)
+		fmt.Printf("\x1b[2KProcessing file %d of %d files - %f%% complete\r", i, totalFileNames, (float64(i+1) / float64(totalFileNames) * 100))
 	}
 
 	wg.Wait()
@@ -341,8 +345,10 @@ func TruncatePath(path string) string {
 	return filepath.Join(dir, filename)
 }
 
-func addPhotosUsingMap(p string, wg *sync.WaitGroup, throttle chan int, shaMap *Set, dirMap *Set, photos *[]Photo) {
+func addPhotosUsingMap(p string, wg *sync.WaitGroup, throttle chan int, shaMap *Set, dirMap *Set, photos *[]Photo, idx int) {
 	defer wg.Done()
+
+	job := idx%runtime.NumCPU() + 1
 
 	var tm time.Time
 
@@ -458,12 +464,15 @@ func addPhotosUsingMap(p string, wg *sync.WaitGroup, throttle chan int, shaMap *
 			tm, _ = time.Parse("2006-01-02", "1971-09-17")
 
 		} else {
+			fmt.Printf("\033[%dB", job)
+			fmt.Printf("\x1b[2KSkipping %s\r", TruncatePath(p))
+			fmt.Printf("\033[%dA", job)
 
-			fmt.Print("\nx\n")
-			fmt.Println(p)
-			fmt.Println(contentType)
-			fmt.Println(ext)
-			fmt.Println(err)
+			// fmt.Print("\nx\n")
+			// fmt.Println(p)
+			// fmt.Println(contentType)
+			// fmt.Println(ext)
+			// fmt.Println(err)
 
 			<-throttle
 			return
@@ -475,7 +484,9 @@ func addPhotosUsingMap(p string, wg *sync.WaitGroup, throttle chan int, shaMap *
 	}
 
 	// Generate sha and filename
-
+	fmt.Printf("\033[%dB", job)
+	fmt.Printf("\x1b[2K%d: Hashing %s\r", job, TruncatePath(p))
+	fmt.Printf("\033[%dA", job)
 	sha := hashContent(content)
 
 	currentPath, err := os.Getwd()
@@ -503,8 +514,10 @@ func addPhotosUsingMap(p string, wg *sync.WaitGroup, throttle chan int, shaMap *
 			(*photos) = append((*photos), photo)
 		}
 
-		fmt.Print("*")
-
+		// fmt.Print("*")
+		fmt.Printf("\033[%dB", job)
+		fmt.Printf("\x1b[2K%d: Skipped %s\r", job, TruncatePath(p))
+		fmt.Printf("\033[%dA", job)
 		<-throttle
 		return
 	}
@@ -521,8 +534,11 @@ func addPhotosUsingMap(p string, wg *sync.WaitGroup, throttle chan int, shaMap *
 		log.Fatal(err)
 	}
 
-	fmt.Print("\n")
-	log.Printf("Copied %s to %s\n", p, newPhotoPath)
+	// fmt.Print("\n")
+	// log.Printf("Copied %s to %s\n", p, newPhotoPath)
+	fmt.Printf("\033[%dB", job)
+	fmt.Printf("\x1b[2K%d: Copying %s to %s\r", job, TruncatePath(p), TruncatePath(photo.Path))
+	fmt.Printf("\033[%dA", job)
 
 	// Add photo to photoMap
 	shaMap.Insert(photo.ShaHash)
